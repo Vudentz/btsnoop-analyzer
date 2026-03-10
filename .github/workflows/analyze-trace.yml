@@ -10,8 +10,11 @@ permissions:
 
 jobs:
   analyze:
-    # Only run on issues with the trace-analysis label (set by template)
-    if: contains(github.event.issue.labels.*.name, 'trace-analysis')
+    # Template labels are applied asynchronously and may not be present
+    # when the issues.opened event fires. Instead, detect the template
+    # by checking for the required privacy acknowledgement checkbox that
+    # only exists in our issue form.
+    if: contains(github.event.issue.body, 'I understand this trace will be processed')
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
