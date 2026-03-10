@@ -2,7 +2,7 @@ name: Analyze btsnoop trace
 
 on:
   issues:
-    types: [opened]
+    types: [opened, reopened]
 
 permissions:
   issues: write
