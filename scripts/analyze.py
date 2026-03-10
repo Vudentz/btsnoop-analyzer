@@ -19,7 +19,8 @@ Usage:
 Environment variables:
     OPENAI_API_KEY      - for --provider openai
     ANTHROPIC_API_KEY   - for --provider anthropic
-    GITHUB_TOKEN        - for --provider github (GitHub Models)
+    GH_MODELS_TOKEN     - for --provider github (PAT with models:read scope)
+    GITHUB_TOKEN        - fallback for --provider github
 """
 
 import argparse
@@ -32,26 +33,32 @@ import urllib.request
 import urllib.error
 
 
+def log(msg):
+    """Print with immediate flush for CI visibility."""
+    print(msg, flush=True)
+
+
 def download_trace(url, dest_path):
     """Download the trace file from the given URL."""
-    print(f"Downloading trace from {url}")
+    log(f"Downloading trace from {url}")
     try:
         req = urllib.request.Request(url)
         # GitHub attachment URLs may need auth for private repos
         token = os.environ.get("GITHUB_TOKEN")
         if token:
             req.add_header("Authorization", f"token {token}")
-        with urllib.request.urlopen(req) as resp, open(dest_path, "wb") as f:
+        with urllib.request.urlopen(req, timeout=60) as resp, \
+                open(dest_path, "wb") as f:
             f.write(resp.read())
-        print(f"Downloaded {os.path.getsize(dest_path)} bytes")
+        log(f"Downloaded {os.path.getsize(dest_path)} bytes")
     except urllib.error.URLError as e:
-        print(f"Failed to download trace: {e}", file=sys.stderr)
+        log(f"Failed to download trace: {e}")
         sys.exit(1)
 
 
 def decode_trace(btmon_path, trace_path):
     """Run btmon -r to decode the trace file."""
-    print(f"Decoding trace with {btmon_path}")
+    log(f"Decoding trace with {btmon_path}")
     try:
         result = subprocess.run(
             [btmon_path, "-r", trace_path],
@@ -61,22 +68,22 @@ def decode_trace(btmon_path, trace_path):
         )
         output = result.stdout
         if result.returncode != 0 and not output:
-            print(f"btmon stderr: {result.stderr}", file=sys.stderr)
+            log(f"btmon stderr: {result.stderr}")
             sys.exit(1)
         lines = output.splitlines()
-        print(f"Decoded {len(lines)} lines")
+        log(f"Decoded {len(lines)} lines")
         return output
     except FileNotFoundError:
-        print(f"btmon not found at {btmon_path}", file=sys.stderr)
+        log(f"btmon not found at {btmon_path}")
         sys.exit(1)
     except subprocess.TimeoutExpired:
-        print("btmon decoding timed out after 120s", file=sys.stderr)
+        log("btmon decoding timed out after 120s")
         sys.exit(1)
 
 
 def anonymize_output(decoded_text, script_path):
     """Run the anonymization script on decoded output."""
-    print("Anonymizing trace output")
+    log("Anonymizing trace output")
     result = subprocess.run(
         ["bash", script_path],
         input=decoded_text,
@@ -125,7 +132,7 @@ def load_docs(docs_path):
         with open(docs_path, "r") as f:
             return f.read()
     except FileNotFoundError:
-        print(f"Warning: docs not found at {docs_path}", file=sys.stderr)
+        log(f"Warning: docs not found at {docs_path}")
         return ""
 
 
@@ -189,7 +196,7 @@ def call_openai(system_prompt, user_prompt, model=None):
     """Call OpenAI API."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        print("OPENAI_API_KEY not set", file=sys.stderr)
+        log("OPENAI_API_KEY not set")
         sys.exit(1)
 
     model = model or "gpt-4o"
@@ -212,16 +219,24 @@ def call_openai(system_prompt, user_prompt, model=None):
         },
     )
 
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    return data["choices"][0]["message"]["content"]
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read())
+        return data["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        log(f"OpenAI API error {e.code}: {body[:500]}")
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        log(f"OpenAI API connection error: {e}")
+        sys.exit(1)
 
 
 def call_anthropic(system_prompt, user_prompt, model=None):
     """Call Anthropic API."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        print("ANTHROPIC_API_KEY not set", file=sys.stderr)
+        log("ANTHROPIC_API_KEY not set")
         sys.exit(1)
 
     model = model or "claude-sonnet-4-20250514"
@@ -245,16 +260,29 @@ def call_anthropic(system_prompt, user_prompt, model=None):
         },
     )
 
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    return data["content"][0]["text"]
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read())
+        return data["content"][0]["text"]
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        log(f"Anthropic API error {e.code}: {body[:500]}")
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        log(f"Anthropic API connection error: {e}")
+        sys.exit(1)
 
 
 def call_github(system_prompt, user_prompt, model=None):
-    """Call GitHub Models API."""
-    token = os.environ.get("GITHUB_TOKEN")
+    """Call GitHub Models API.
+
+    Requires a PAT with models:read scope stored as GH_MODELS_TOKEN,
+    or falls back to GITHUB_TOKEN (which may not have Models access).
+    """
+    token = os.environ.get("GH_MODELS_TOKEN") or \
+        os.environ.get("GITHUB_TOKEN")
     if not token:
-        print("GITHUB_TOKEN not set", file=sys.stderr)
+        log("GH_MODELS_TOKEN (or GITHUB_TOKEN) not set")
         sys.exit(1)
 
     model = model or "openai/gpt-4o"
@@ -277,9 +305,21 @@ def call_github(system_prompt, user_prompt, model=None):
         },
     )
 
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    return data["choices"][0]["message"]["content"]
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read())
+        return data["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        log(f"GitHub Models API error {e.code}: {body[:500]}")
+        if e.code in (401, 403):
+            log("Hint: The built-in GITHUB_TOKEN may not have access to "
+                "GitHub Models. Create a PAT with 'models:read' scope and "
+                "store it as the GH_MODELS_TOKEN repository secret.")
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        log(f"GitHub Models API connection error: {e}")
+        sys.exit(1)
 
 
 PROVIDERS = {
@@ -343,7 +383,7 @@ def main():
     os.unlink(trace_path)
 
     if not decoded.strip():
-        print("Error: btmon produced no output", file=sys.stderr)
+        log("Error: btmon produced no output")
         sys.exit(1)
 
     # Anonymize if requested
@@ -351,19 +391,33 @@ def main():
         anon_script = os.path.join(script_dir, "anonymize.sh")
         decoded = anonymize_output(decoded, anon_script)
 
+    # Provider-specific context limits (in chars, ~4 chars per token).
+    # GitHub Models free tier: 8K tokens input total.  Reserve ~1K tokens
+    # for the system prompt template, description, and formatting overhead.
+    # That leaves ~7K tokens (~28K chars) shared between docs and trace.
+    CONTEXT_LIMITS = {
+        "github":    {"trace": 24000, "docs": 4000},
+        "openai":    {"trace": 100000, "docs": 50000},
+        "anthropic": {"trace": 100000, "docs": 50000},
+    }
+    limits = CONTEXT_LIMITS.get(args.provider, CONTEXT_LIMITS["openai"])
+
     # Truncate for context window
-    decoded = truncate_for_context(decoded)
+    decoded = truncate_for_context(decoded, max_chars=limits["trace"])
 
     # Load docs
     docs = load_docs(args.docs_path)
-    docs = truncate_for_context(docs, max_chars=50000)
+    docs = truncate_for_context(docs, max_chars=limits["docs"])
+
+    log(f"Trace: {len(decoded)} chars, Docs: {len(docs)} chars "
+        f"(limits: {limits})")
 
     # Build prompt and call LLM
     system_prompt, user_prompt = build_prompt(
         decoded, docs, args.description, args.focus
     )
 
-    print(f"Sending to {args.provider} for analysis...")
+    log(f"Sending to {args.provider} for analysis...")
     provider_fn = PROVIDERS[args.provider]
     analysis = provider_fn(system_prompt, user_prompt, args.model)
 
@@ -371,7 +425,7 @@ def main():
     if args.output:
         with open(args.output, "w") as f:
             f.write(analysis)
-        print(f"Analysis written to {args.output}")
+        log(f"Analysis written to {args.output}")
     else:
         print(analysis)
 

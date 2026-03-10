@@ -138,9 +138,11 @@ jobs:
       - name: Run analysis
         id: analysis
         env:
+          PYTHONUNBUFFERED: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'github' }}
           LLM_MODEL: ${{ vars.LLM_MODEL || '' }}
         run: |
