@@ -1,0 +1,211 @@
+name: Analyze btsnoop trace
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  analyze:
+    # Only run on issues with the trace-analysis label (set by template)
+    if: contains(github.event.issue.labels.*.name, 'trace-analysis')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout analyzer repo
+        uses: actions/checkout@v4
+
+      - name: Parse issue body
+        id: parse
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+
+            // Extract trace file URL from issue body
+            // GitHub attachments look like:
+            //   https://github.com/user/repo/files/12345/trace.log
+            //   https://github.com/user-attachments/files/...
+            //   https://github.com/user-attachments/assets/...
+            const urlPatterns = [
+              /https:\/\/github\.com\/[^\s)]+\.(?:log|snoop|btsnoop|cfa)/gi,
+              /https:\/\/github\.com\/user-attachments\/(?:files|assets)\/[^\s)]+/gi,
+            ];
+
+            let traceUrl = '';
+            for (const pattern of urlPatterns) {
+              const match = body.match(pattern);
+              if (match) {
+                traceUrl = match[0];
+                break;
+              }
+            }
+
+            if (!traceUrl) {
+              core.setFailed('No trace file URL found in issue body');
+              return;
+            }
+
+            // Extract description (between "### Description" and next heading)
+            const descMatch = body.match(
+              /### Description\s*\n([\s\S]*?)(?=\n###|\n\*\*|$)/i
+            );
+            // Also try the form field format
+            const descMatch2 = body.match(
+              /#### Description\s*\n([\s\S]*?)(?=\n####|\n###|$)/i
+            );
+            const description = (descMatch?.[1] || descMatch2?.[1] || '')
+              .trim() || 'No description provided';
+
+            // Extract focus area
+            const focusMatch = body.match(
+              /### Analysis focus\s*\n\s*(\S[^\n]*)/i
+            ) || body.match(
+              /#### Analysis focus\s*\n\s*(\S[^\n]*)/i
+            );
+            const focus = focusMatch?.[1]?.trim() || 'General (full analysis)';
+
+            // Check if user opted out of anonymization
+            // The checkbox text contains "Skip anonymization"
+            const skipAnon = body.includes('[X] **Skip anonymization**') ||
+                             body.includes('[x] **Skip anonymization**');
+
+            core.setOutput('trace_url', traceUrl);
+            core.setOutput('description', description);
+            core.setOutput('focus', focus);
+            core.setOutput('anonymize', skipAnon ? 'false' : 'true');
+
+            console.log(`Trace URL: ${traceUrl}`);
+            console.log(`Description: ${description}`);
+            console.log(`Focus: ${focus}`);
+            console.log(`Anonymize: ${!skipAnon}`);
+
+      - name: Post "analyzing" comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '**btsnoop Analyzer** is processing your trace. This typically takes 1-3 minutes.\n\n_Decoding with btmon, then sending to LLM for analysis..._'
+            });
+
+      - name: Install BlueZ build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            libglib2.0-dev \
+            libdbus-1-dev \
+            libudev-dev \
+            libical-dev \
+            libreadline-dev \
+            libjson-c-dev \
+            libelf-dev
+
+      - name: Clone and build btmon
+        run: |
+          git clone --depth 1 https://git.kernel.org/pub/scm/bluetooth/bluez.git bluez
+          cd bluez
+          ./bootstrap-configure \
+            --disable-systemd \
+            --disable-udev \
+            --disable-cups \
+            --disable-obex \
+            --disable-mesh
+          make monitor/btmon -j$(nproc)
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run analysis
+        id: analysis
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'github' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || '' }}
+        run: |
+          ANON_FLAG=""
+          if [ "${{ steps.parse.outputs.anonymize }}" = "true" ]; then
+            ANON_FLAG="--anonymize"
+          fi
+
+          MODEL_FLAG=""
+          if [ -n "$LLM_MODEL" ]; then
+            MODEL_FLAG="--model $LLM_MODEL"
+          fi
+
+          python3 scripts/analyze.py \
+            --trace-url "${{ steps.parse.outputs.trace_url }}" \
+            --description "${{ steps.parse.outputs.description }}" \
+            --focus "${{ steps.parse.outputs.focus }}" \
+            --provider "$LLM_PROVIDER" \
+            $MODEL_FLAG \
+            $ANON_FLAG \
+            --btmon-path ./bluez/monitor/btmon \
+            --docs-path ./bluez/doc/btmon.rst \
+            --output analysis-result.md
+
+      - name: Post analysis comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const analysis = fs.readFileSync('analysis-result.md', 'utf8');
+
+            const body = `## btsnoop Trace Analysis
+
+            ${analysis}
+
+            ---
+            <sub>Analyzed by [btsnoop-analyzer](https://github.com/${context.repo.owner}/${context.repo.repo}) using btmon from [BlueZ](https://github.com/bluez/bluez). MAC addresses ${
+              '${{ steps.parse.outputs.anonymize }}' === 'true'
+                ? 'were anonymized'
+                : 'were **not** anonymized (user opted out)'
+            } before LLM processing.</sub>`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Post error comment
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Analysis Failed
+
+            The automated analysis encountered an error. This could be due to:
+            - Unsupported trace file format
+            - Trace file too large to process
+            - LLM API rate limiting or downtime
+
+            A maintainer will review your trace manually.
+
+            <details>
+            <summary>Debug info</summary>
+
+            Workflow run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+            </details>`
+            });

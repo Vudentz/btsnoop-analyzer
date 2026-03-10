@@ -1,0 +1,75 @@
+name: Analyze btsnoop trace
+description: Upload a btsnoop/HCI trace file for automated analysis
+title: "[Trace] "
+labels: ["trace-analysis"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## btsnoop Trace Analysis
+
+        Upload your btsnoop or HCI snoop trace file for automated analysis.
+        The trace will be decoded using `btmon` from the BlueZ project and
+        analyzed by an LLM using the btmon documentation as a knowledge base.
+
+        **Supported formats:** `.log`, `.snoop`, `.btsnoop`, `.cfa`
+
+  - type: textarea
+    id: trace-file
+    attributes:
+      label: Trace file
+      description: |
+        Drag and drop your btsnoop trace file here. GitHub will upload it
+        as an attachment. You can also paste a direct URL to the file.
+      placeholder: Drag and drop your trace file here...
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: |
+        Describe the scenario or issue you're investigating. What were you
+        doing when the trace was captured? What behavior are you seeing?
+      placeholder: |
+        e.g., "Bluetooth headset disconnects after 30 seconds of audio
+        playback. Using LE Audio with LC3 codec."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: focus-area
+    attributes:
+      label: Analysis focus
+      description: What aspect should the analysis focus on?
+      options:
+        - General (full analysis)
+        - Connection issues
+        - Pairing / Security
+        - GATT discovery
+        - Audio streaming (A2DP / LE Audio)
+        - L2CAP channel issues
+        - Advertising / Scanning
+        - Disconnection analysis
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      description: |
+        btsnoop traces contain Bluetooth MAC addresses and may contain
+        device names. By default, MAC addresses and device names are
+        anonymized before being sent to the LLM for analysis.
+      options:
+        - label: >
+            **Skip anonymization** — Send the raw decoded trace to the LLM
+            without scrubbing MAC addresses or device names. This may
+            produce more accurate analysis but exposes device identifiers.
+          required: false
+        - label: >
+            I understand this trace will be processed by a third-party LLM
+            API and I have the right to share this data.
+          required: true
