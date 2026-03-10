@@ -126,7 +126,8 @@ jobs:
             --disable-testing \
             --disable-experimental \
             --disable-deprecated \
-            --disable-library
+            --disable-library \
+            --disable-client
           make monitor/btmon -j$(nproc)
 
       - name: Set up Python
