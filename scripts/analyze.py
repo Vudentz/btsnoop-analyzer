@@ -26,6 +26,7 @@ Environment variables:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -81,16 +82,28 @@ def decode_trace(btmon_path, trace_path):
         sys.exit(1)
 
 
-def anonymize_output(decoded_text, script_path):
-    """Run the anonymization script on decoded output."""
+def anonymize_output(decoded_text):
+    """Replace MAC addresses with consistent pseudonyms.
+
+    Each unique MAC gets a fake address (00:00:00:00:00:01, :02, ...)
+    preserving device relationships while hiding real addresses.
+    """
     log("Anonymizing trace output")
-    result = subprocess.run(
-        ["bash", script_path],
-        input=decoded_text,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+    mac_map = {}
+    counter = 0
+    mac_re = re.compile(r'[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}')
+
+    def replace_mac(match):
+        nonlocal counter
+        mac = match.group(0).upper()
+        if mac not in mac_map:
+            counter += 1
+            mac_map[mac] = f"00:00:00:00:00:{counter:02X}"
+        return mac_map[mac]
+
+    result = mac_re.sub(replace_mac, decoded_text)
+    log(f"Anonymized {counter} unique MAC addresses")
+    return result
 
 
 def truncate_for_context(text, max_chars=100000):
@@ -371,7 +384,6 @@ def main():
     )
     args = parser.parse_args()
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # Download trace
     with tempfile.NamedTemporaryFile(suffix=".log", delete=False) as tmp:
@@ -388,8 +400,7 @@ def main():
 
     # Anonymize if requested
     if args.anonymize:
-        anon_script = os.path.join(script_dir, "anonymize.sh")
-        decoded = anonymize_output(decoded, anon_script)
+        decoded = anonymize_output(decoded)
 
     # Provider-specific context limits (in chars, ~4 chars per token).
     # GitHub Models free tier: 8K tokens input total.  Reserve ~1K tokens
