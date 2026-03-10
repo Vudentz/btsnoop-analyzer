@@ -113,7 +113,8 @@ jobs:
             libical-dev \
             libreadline-dev \
             libjson-c-dev \
-            libelf-dev
+            libelf-dev \
+            libdw-dev
 
       - name: Clone and build btmon
         run: |
