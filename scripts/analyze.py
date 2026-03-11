@@ -298,7 +298,7 @@ def call_github(system_prompt, user_prompt, model=None):
         log("GH_MODELS_TOKEN (or GITHUB_TOKEN) not set")
         sys.exit(1)
 
-    model = model or "openai/gpt-4o"
+    model = model or "openai/gpt-5-mini"
     payload = json.dumps({
         "model": model,
         "messages": [
@@ -403,11 +403,11 @@ def main():
         decoded = anonymize_output(decoded)
 
     # Provider-specific context limits (in chars, ~4 chars per token).
-    # GitHub Models free tier: 8K tokens input total.  Reserve ~1K tokens
-    # for the system prompt template, description, and formatting overhead.
-    # That leaves ~7K tokens (~28K chars) shared between docs and trace.
+    # GitHub Models free tier (gpt-5-mini): 4K tokens input total.
+    # Reserve ~500 tokens for system prompt template + formatting overhead.
+    # That leaves ~3.5K tokens (~14K chars) shared between docs and trace.
     CONTEXT_LIMITS = {
-        "github":    {"trace": 24000, "docs": 4000},
+        "github":    {"trace": 12000, "docs": 2000},
         "openai":    {"trace": 100000, "docs": 50000},
         "anthropic": {"trace": 100000, "docs": 50000},
     }
