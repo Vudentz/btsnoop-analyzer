@@ -139,8 +139,45 @@ def truncate_for_context(text, max_chars=100000):
     return head + separator + tail
 
 
-def load_docs(docs_path):
-    """Load the btmon documentation as knowledge base context."""
+# Map focus area strings (from issue template) to doc file names.
+# Each focus area loads the base btmon.rst plus focus-specific files.
+FOCUS_DOCS = {
+    "Connection issues": ["btmon-connections.rst"],
+    "Pairing / Security": ["btmon-smp.rst"],
+    "GATT discovery": ["btmon-gatt.rst"],
+    "Audio streaming (A2DP / LE Audio)": ["btmon-le-audio.rst"],
+    "L2CAP channel issues": ["btmon-l2cap.rst"],
+    "Advertising / Scanning": ["btmon-advertising.rst"],
+    "Disconnection analysis": ["btmon-connections.rst"],
+}
+
+
+def load_docs(docs_path, focus=None):
+    """Load btmon documentation as knowledge base context.
+
+    When a specific focus area is given and matching split doc files
+    exist, load only the focus-specific file(s) instead of the full
+    btmon.rst.  This avoids truncating relevant content when the
+    context window is small (e.g. GitHub Models free tier).
+    """
+    docs_dir = os.path.dirname(docs_path)
+
+    # Try focus-specific docs first
+    if focus and focus in FOCUS_DOCS:
+        parts = []
+        for name in FOCUS_DOCS[focus]:
+            path = os.path.join(docs_dir, name)
+            try:
+                with open(path, "r") as f:
+                    parts.append(f.read())
+                log(f"Loaded focus docs: {name}")
+            except FileNotFoundError:
+                log(f"Warning: focus doc not found: {path}")
+        if parts:
+            return "\n\n".join(parts)
+        log("Focus docs not found, falling back to full btmon.rst")
+
+    # Fallback: load the main btmon.rst
     try:
         with open(docs_path, "r") as f:
             return f.read()
@@ -416,8 +453,8 @@ def main():
     # Truncate for context window
     decoded = truncate_for_context(decoded, max_chars=limits["trace"])
 
-    # Load docs
-    docs = load_docs(args.docs_path)
+    # Load docs (focus-specific when available)
+    docs = load_docs(args.docs_path, focus=args.focus)
     docs = truncate_for_context(docs, max_chars=limits["docs"])
 
     log(f"Trace: {len(decoded)} chars, Docs: {len(docs)} chars "
