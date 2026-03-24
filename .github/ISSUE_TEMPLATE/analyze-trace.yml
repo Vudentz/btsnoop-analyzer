@@ -46,10 +46,13 @@ body:
       options:
         - General (full analysis)
         - Connection issues
+        - Controller enumeration
         - Pairing / Security
         - GATT discovery
-        - Audio streaming (A2DP / LE Audio)
-        - HFP / Voice calls
+        - Audio
+        - Audio / LE Audio
+        - Audio / A2DP
+        - Audio / HFP
         - L2CAP channel issues
         - Advertising / Scanning
         - Disconnection analysis
