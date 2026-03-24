@@ -34,6 +34,7 @@ import urllib.request
 import urllib.error
 
 from detect import detect, clip_for_focus
+from templates import template_instructions
 
 
 def log(msg):
@@ -217,11 +218,14 @@ error codes, and analysis techniques:
 {docs_text}
 </btmon-documentation>
 
-Your task is to analyze a decoded btsnoop trace and provide a structured \
+Your task is to analyze a decoded btsnoop trace and produce a diagnostic \
 report. Be specific — reference actual handle values, opcodes, error codes, \
 and timestamps from the trace. Identify the root cause when possible.{clip_note}
 
 Format your report in GitHub-flavored markdown."""
+
+    # Get the structured output template for this focus area
+    output_instructions = template_instructions(focus, auto_detected)
 
     user_prompt = f"""## Analysis Request
 
@@ -234,28 +238,9 @@ Format your report in GitHub-flavored markdown."""
 {decoded_text}
 ```
 
-## Instructions
+## Output format
 
-Analyze this trace and provide a report with these sections:
-
-### Summary
-Brief overview of what happened in the trace (1-3 sentences).
-
-### Connection Timeline
-Key events in chronological order with timestamps.
-
-### Protocol Analysis
-Detailed analysis focused on "{focus}". Reference specific handles, \
-opcodes, CIDs, and error codes from the trace.
-
-### Issues Found
-Any errors, unexpected behavior, or protocol violations. For each issue:
-- What happened (with timestamp and specific values)
-- Why it matters
-- Possible root cause
-
-### Recommendations
-Actionable suggestions for debugging or resolving the identified issues."""
+{output_instructions}"""
 
     return system_prompt, user_prompt
 
