@@ -49,6 +49,7 @@ body:
         - Pairing / Security
         - GATT discovery
         - Audio streaming (A2DP / LE Audio)
+        - HFP / Voice calls
         - L2CAP channel issues
         - Advertising / Scanning
         - Disconnection analysis

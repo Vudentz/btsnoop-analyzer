@@ -142,10 +142,14 @@ def truncate_for_context(text, max_chars=100000):
 # Map focus area strings (from issue template) to doc file names.
 # Each focus area loads the base btmon.rst plus focus-specific files.
 FOCUS_DOCS = {
-    "Connection issues": ["btmon-connections.rst"],
+    "Connection issues": ["btmon-connections.rst", "btmon-hci-init.rst"],
     "Pairing / Security": ["btmon-smp.rst"],
     "GATT discovery": ["btmon-gatt.rst"],
-    "Audio streaming (A2DP / LE Audio)": ["btmon-le-audio.rst"],
+    "Audio streaming (A2DP / LE Audio)": [
+        "btmon-le-audio.rst",
+        "btmon-a2dp.rst",
+    ],
+    "HFP / Voice calls": ["btmon-hfp.rst"],
     "L2CAP channel issues": ["btmon-l2cap.rst"],
     "Advertising / Scanning": ["btmon-advertising.rst"],
     "Disconnection analysis": ["btmon-connections.rst"],
