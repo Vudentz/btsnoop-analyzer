@@ -33,6 +33,8 @@ import tempfile
 import urllib.request
 import urllib.error
 
+from detect import detect, clip_for_focus
+
 
 def log(msg):
     """Print with immediate flush for CI visibility."""
@@ -190,8 +192,20 @@ def load_docs(docs_path, focus=None):
         return ""
 
 
-def build_prompt(decoded_text, docs_text, description, focus):
+def build_prompt(decoded_text, docs_text, description, focus,
+                 auto_detected=False):
     """Build the analysis prompt for the LLM."""
+    clip_note = ""
+    if auto_detected:
+        clip_note = (
+            "\n\nNote: The focus area was auto-detected from error "
+            "patterns in the trace. The trace below has been clipped to "
+            "show only the sections relevant to the detected problem "
+            "area, with surrounding context packets preserved. Lines "
+            "marked '[... N lines skipped ...]' indicate gaps between "
+            "relevant sections."
+        )
+
     system_prompt = f"""You are a Bluetooth protocol analyst specializing in \
 BlueZ btmon trace analysis. You have deep knowledge of HCI, L2CAP, ATT/GATT, \
 SMP, and LE Audio protocols.
@@ -205,7 +219,7 @@ error codes, and analysis techniques:
 
 Your task is to analyze a decoded btsnoop trace and provide a structured \
 report. Be specific — reference actual handle values, opcodes, error codes, \
-and timestamps from the trace. Identify the root cause when possible.
+and timestamps from the trace. Identify the root cause when possible.{clip_note}
 
 Format your report in GitHub-flavored markdown."""
 
@@ -454,11 +468,55 @@ def main():
     }
     limits = CONTEXT_LIMITS.get(args.provider, CONTEXT_LIMITS["openai"])
 
-    # Truncate for context window
-    decoded = truncate_for_context(decoded, max_chars=limits["trace"])
+    focus = args.focus
+    auto_detected = False
+
+    # Auto-detect problem area when user selects General analysis
+    if focus == "General (full analysis)":
+        log("Running auto-detection on decoded trace...")
+        detected = detect(decoded)
+        if detected:
+            for det in detected:
+                marker = " ** ERRORS **" if det.has_errors else ""
+                log(f"  {det.area.name:15s}  score={det.score:4d}  "
+                    f"activity={det.activity_count}  "
+                    f"errors={det.error_count}{marker}")
+
+            # Pick the top area that has errors; if none have errors,
+            # use the highest-scoring area
+            top_error = next(
+                (d for d in detected if d.has_errors), None
+            )
+            top = top_error or detected[0]
+
+            focus = top.area.focus
+            auto_detected = True
+            log(f"Auto-detected focus: {focus}")
+        else:
+            log("No specific protocol area detected, using full trace")
+
+    # Clip the log to the relevant section for the focus area.
+    # This extracts packets around pattern matches rather than blind
+    # head/tail truncation, so the LLM sees the exact problem context.
+    if focus != "General (full analysis)":
+        clipped = clip_for_focus(decoded, focus,
+                                 max_chars=limits["trace"])
+        if clipped != decoded:
+            original_len = len(decoded)
+            decoded = clipped
+            log(f"Clipped trace: {len(decoded)} chars "
+                f"({len(decoded) * 100 // original_len}% of "
+                f"{original_len} chars)")
+        else:
+            # No clip matches — fall back to standard truncation
+            decoded = truncate_for_context(decoded,
+                                           max_chars=limits["trace"])
+    else:
+        decoded = truncate_for_context(decoded,
+                                       max_chars=limits["trace"])
 
     # Load docs (focus-specific when available)
-    docs = load_docs(args.docs_path, focus=args.focus)
+    docs = load_docs(args.docs_path, focus=focus)
     docs = truncate_for_context(docs, max_chars=limits["docs"])
 
     log(f"Trace: {len(decoded)} chars, Docs: {len(docs)} chars "
@@ -466,7 +524,8 @@ def main():
 
     # Build prompt and call LLM
     system_prompt, user_prompt = build_prompt(
-        decoded, docs, args.description, args.focus
+        decoded, docs, args.description, focus,
+        auto_detected=auto_detected,
     )
 
     log(f"Sending to {args.provider} for analysis...")

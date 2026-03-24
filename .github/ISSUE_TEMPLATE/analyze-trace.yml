@@ -42,7 +42,9 @@ body:
     id: focus-area
     attributes:
       label: Analysis focus
-      description: What aspect should the analysis focus on?
+      description: >
+        What aspect should the analysis focus on? Select "General" to
+        auto-detect the problem area from the trace.
       options:
         - General (full analysis)
         - Connection issues
