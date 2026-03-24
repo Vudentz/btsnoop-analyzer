@@ -52,6 +52,20 @@ def is_packet_start(line):
 # ---------------------------------------------------------------------------
 
 @dataclass
+class AbsenceCheck:
+    """Detect errors when an expected pattern is absent.
+
+    If ``prerequisite`` matches at least one line but ``expected`` matches
+    none, this counts as an error with the given ``message``.  This
+    catches protocol-flow breaks like "PA sync established but BIG Info
+    never received."
+    """
+    prerequisite: str   # regex -- must be present
+    expected: str       # regex -- should follow; absence = error
+    message: str        # human-readable diagnostic
+
+
+@dataclass
 class AreaDef:
     """Definition of a detectable protocol area."""
     name: str
@@ -61,6 +75,8 @@ class AreaDef:
     activity: list = field(default_factory=list)
     # Patterns that indicate an error or failure in this area
     errors: list = field(default_factory=list)
+    # Absence-based error checks (prerequisite present + expected absent)
+    absence_checks: list = field(default_factory=list)
 
 
 AREAS = [
@@ -99,23 +115,54 @@ AREAS = [
         name="le_audio",
         focus="Audio / LE Audio",
         activity=[
+            # Unicast (CIS) patterns
             r"ASE Control Point",
             r"ASE ID:",
             r"Set CIG Parameters",
             r"Create CIS",
             r"CIS Established",
             r"Setup ISO Data Path",
+            # Broadcast (BIG) patterns
             r"Basic Audio Announcement",
             r"Create BIG",
             r"BIG Complete",
             r"BIG Create Sync",
             r"BIG Sync Established",
+            r"BIG Info Advertising Report",
+            # BASS / PA patterns (broadcast receiver flow)
+            r"Add Source",
+            r"Periodic Advertising Create Sync",
+            r"Periodic Advertising Sync Established",
+            r"Periodic Advertising Sync Transfer Received",
+            r"Periodic Advertising Sync Transfer Parameters",
+            r"Periodic Advertising Report",
         ],
         errors=[
             r"CIS Established.*Status:(?!.*Success)",
+            r"BIG Sync Established.*Status:(?!.*Success)",
             r"BIG Sync Lost",
             r"BIG Terminate",
             r"State:.*Releasing",
+        ],
+        absence_checks=[
+            AbsenceCheck(
+                prerequisite=r"Periodic Advertising Sync (?:Established|Transfer Received)",
+                expected=r"BIG Info Advertising Report",
+                message="PA synced but BIG Info never received -- "
+                        "BIG does not exist on this PA train",
+            ),
+            AbsenceCheck(
+                prerequisite=r"BIG Info Advertising Report",
+                expected=r"BIG Create Sync",
+                message="BIG Info received but host never sent "
+                        "BIG Create Sync",
+            ),
+            AbsenceCheck(
+                prerequisite=r"BIG Create Sync",
+                expected=r"BIG Sync Established",
+                message="BIG Create Sync sent but BIG Sync never "
+                        "established",
+            ),
         ],
     ),
     AreaDef(
@@ -215,6 +262,8 @@ class DetectedArea:
     error_lines: list = field(default_factory=list)
     # Line numbers where activity was found
     activity_lines: list = field(default_factory=list)
+    # Absence-based error messages that fired
+    absence_errors: list = field(default_factory=list)
 
     @property
     def score(self):
@@ -222,12 +271,14 @@ class DetectedArea:
 
         Errors are weighted 10x over activity, so an area with even
         one error outranks an area with only activity matches.
+        Absence errors count as errors.
         """
-        return self.error_count * 10 + self.activity_count
+        total_errors = self.error_count + len(self.absence_errors)
+        return total_errors * 10 + self.activity_count
 
     @property
     def has_errors(self):
-        return self.error_count > 0
+        return self.error_count > 0 or len(self.absence_errors) > 0
 
 
 def detect(text):
@@ -259,7 +310,25 @@ def detect(text):
                     det.error_lines.append(i)
                     break
 
-        if det.activity_count > 0 or det.error_count > 0:
+        # Run absence-based checks: prerequisite present but expected
+        # absent means a protocol flow broke at a known gate.
+        for check in area_def.absence_checks:
+            prereq_re = re.compile(check.prerequisite)
+            expect_re = re.compile(check.expected)
+            has_prereq = False
+            has_expected = False
+            for line in lines:
+                if not has_prereq and prereq_re.search(line):
+                    has_prereq = True
+                if not has_expected and expect_re.search(line):
+                    has_expected = True
+                if has_prereq and has_expected:
+                    break
+            if has_prereq and not has_expected:
+                det.absence_errors.append(check.message)
+
+        if det.activity_count > 0 or det.error_count > 0 \
+                or det.absence_errors:
             results.append(det)
 
     results.sort(key=lambda d: d.score, reverse=True)
@@ -460,6 +529,9 @@ def main():
                 if len(det.error_lines) > 5 else ""
             print(f"  {'':15s}  error lines: "
                   f"{', '.join(str(l) for l in preview)}{more}")
+        if det.absence_errors:
+            for msg in det.absence_errors:
+                print(f"  {'':15s}  ABSENCE: {msg}")
         print()
 
     # Show top area's clipped output size

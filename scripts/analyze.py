@@ -194,7 +194,7 @@ def load_docs(docs_path, focus=None):
 
 
 def build_prompt(decoded_text, docs_text, description, focus,
-                 auto_detected=False):
+                 auto_detected=False, absence_errors=None):
     """Build the analysis prompt for the LLM."""
     clip_note = ""
     if auto_detected:
@@ -206,6 +206,14 @@ def build_prompt(decoded_text, docs_text, description, focus,
             "marked '[... N lines skipped ...]' indicate gaps between "
             "relevant sections."
         )
+        if absence_errors:
+            hints = "\n".join(f"  - {msg}" for msg in absence_errors)
+            clip_note += (
+                "\n\nThe auto-detector identified these protocol-flow "
+                "gaps (expected events that never appeared):\n"
+                f"{hints}\n"
+                "Investigate these gaps as likely root causes."
+            )
 
     system_prompt = f"""You are a Bluetooth protocol analyst specializing in \
 BlueZ btmon trace analysis. You have deep knowledge of HCI, L2CAP, ATT/GATT, \
@@ -455,6 +463,7 @@ def main():
 
     focus = args.focus
     auto_detected = False
+    absence_errors = []
 
     # Auto-detect problem area when user selects General analysis
     if focus == "General (full analysis)":
@@ -466,6 +475,8 @@ def main():
                 log(f"  {det.area.name:15s}  score={det.score:4d}  "
                     f"activity={det.activity_count}  "
                     f"errors={det.error_count}{marker}")
+                for msg in det.absence_errors:
+                    log(f"  {'':15s}  ABSENCE: {msg}")
 
             # Pick the top area that has errors; if none have errors,
             # use the highest-scoring area
@@ -475,6 +486,7 @@ def main():
             top = top_error or detected[0]
 
             focus = top.area.focus
+            absence_errors = top.absence_errors
             auto_detected = True
             log(f"Auto-detected focus: {focus}")
         else:
@@ -511,6 +523,7 @@ def main():
     system_prompt, user_prompt = build_prompt(
         decoded, docs, args.description, focus,
         auto_detected=auto_detected,
+        absence_errors=absence_errors,
     )
 
     log(f"Sending to {args.provider} for analysis...")
