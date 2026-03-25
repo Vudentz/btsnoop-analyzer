@@ -218,6 +218,59 @@ class Annotator:
         if rank.get(priority, 0) > rank.get(pkt.priority, 0):
             pkt.priority = priority
 
+    # Reason codes that indicate graceful (intentional) disconnection.
+    # These are NOT flagged as errors.
+    GRACEFUL_REASONS = re.compile(
+        r"Remote User Terminated|"
+        r"Connection Terminated By Local Host|"
+        r"0x13\b|0x16\b"
+    )
+
+    @classmethod
+    def _is_graceful_disconnect(cls, pkt):
+        """Return True if this Disconnect packet is a graceful teardown.
+
+        Graceful disconnects are:
+        - HCI Command: Disconnect (direction '<') — local host initiated
+        - Disconnect Complete with Success and a graceful reason code
+        """
+        body_text = "\n".join(pkt.body)
+
+        # Local-initiated Disconnect command is always graceful
+        if pkt.direction == "<" and "HCI Command: Disconnect" in pkt.summary:
+            return True
+
+        # Disconnect Complete with graceful reason
+        if "Disconnect Complete" in pkt.summary:
+            if "Success" in body_text and cls.GRACEFUL_REASONS.search(body_text):
+                return True
+
+        return False
+
+    def _tag_disconnect(self, pkt, handle="?"):
+        """Tag a disconnect packet, distinguishing graceful from error.
+
+        Graceful disconnects get priority=context (informational).
+        Non-graceful disconnects get priority=key (potential issue).
+        """
+        body_text = "\n".join(pkt.body)
+        reason_m = re.search(r"Reason:\s*(.+)", body_text)
+        reason = reason_m.group(1).strip() if reason_m else "?"
+
+        if self._is_graceful_disconnect(pkt):
+            if handle != "?":
+                ann = f"Graceful disconnect handle={handle}: {reason}"
+            else:
+                ann = f"Graceful disconnect: {reason}"
+            self._tag(pkt, "GRACEFUL_DISCONNECT", priority="context",
+                      annotation=ann)
+        else:
+            if handle != "?":
+                ann = f"Disconnect handle={handle}: {reason}"
+            else:
+                ann = f"Disconnect: {reason}"
+            self._tag(pkt, "DISCONNECT", annotation=ann)
+
 
 # ---------------------------------------------------------------------------
 # LE Audio annotator
@@ -393,10 +446,7 @@ class LEAudioAnnotator(Annotator):
                       annotation=f"LE connection: {status}")
 
         elif "Disconnect" in s and pkt.direction in ("<", ">"):
-            reason_m = re.search(r"Reason:\s*(.+)", body_text)
-            reason = reason_m.group(1).strip() if reason_m else "?"
-            self._tag(pkt, "DISCONNECT",
-                      annotation=f"Disconnect: {reason}")
+            self._tag_disconnect(pkt)
 
     def finalize(self, packets):
         diags = []
@@ -554,10 +604,7 @@ class A2DPAnnotator(Annotator):
 
         elif "Disconnect" in s and pkt.direction in ("<", ">") \
                 and not pkt.tags:
-            reason_m = re.search(r"Reason:\s*(.+)", body_text)
-            reason = reason_m.group(1).strip() if reason_m else "?"
-            self._tag(pkt, "DISCONNECT",
-                      annotation=f"Disconnect: {reason}")
+            self._tag_disconnect(pkt)
 
         # Number of Completed Packets -- only flag anomalous latency
         elif "Number of Completed Packets" in full and not pkt.tags:
@@ -661,10 +708,7 @@ class HFPAnnotator(Annotator):
                       annotation=f"Connection: {status}")
 
         elif "Disconnect" in s and pkt.direction in ("<", ">"):
-            reason_m = re.search(r"Reason:\s*(.+)", body_text)
-            reason = reason_m.group(1).strip() if reason_m else "?"
-            self._tag(pkt, "DISCONNECT",
-                      annotation=f"Disconnect: {reason}")
+            self._tag_disconnect(pkt)
 
     def finalize(self, packets):
         diags = []
@@ -795,13 +839,9 @@ class ConnectionsAnnotator(Annotator):
                 self._tag(pkt, "ERROR")
 
         elif "Disconnect" in s and pkt.direction in ("<", ">"):
-            reason_m = re.search(r"Reason:\s*(.+)", body_text)
-            reason = reason_m.group(1).strip() if reason_m else "?"
             handle_m = re.search(r"Handle:\s*(\d+)", body_text)
             handle = handle_m.group(1) if handle_m else "?"
-            self._tag(pkt, "DISCONNECT",
-                      annotation=f"Disconnect handle={handle}: "
-                      f"{reason}")
+            self._tag_disconnect(pkt, handle=handle)
 
         elif "Connection Update" in full:
             self._tag(pkt, "CONN_UPDATE", priority="context",
@@ -983,13 +1023,9 @@ class DisconnectionAnnotator(Annotator):
         full = s + "\n" + body_text
 
         if "Disconnect" in s and pkt.direction in ("<", ">"):
-            reason_m = re.search(r"Reason:\s*(.+)", body_text)
-            reason = reason_m.group(1).strip() if reason_m else "?"
             handle_m = re.search(r"Handle:\s*(\d+)", body_text)
             handle = handle_m.group(1) if handle_m else "?"
-            self._tag(pkt, "DISCONNECT",
-                      annotation=f"Disconnect handle={handle}: "
-                      f"{reason}")
+            self._tag_disconnect(pkt, handle=handle)
 
         elif "Connection Complete" in full:
             status = "Success" if "Success" in body_text else "FAIL"
@@ -1053,11 +1089,47 @@ def _format_packet(pkt, include_body=True):
     return "\n".join(parts)
 
 
-def prefilter(text, focus, max_chars=24000):
+def annotate_trace(text, focus):
+    """Parse and annotate a decoded btmon trace.
+
+    Steps:
+        1. Parse decoded btmon text into Packet objects
+        2. Run the focus-specific annotator(s) to tag packets
+
+    Args:
+        text: Full decoded btmon output.
+        focus: Focus area string (e.g. "Audio / LE Audio").
+
+    Returns:
+        (packets, diagnostics, annotator_found)
+        packets: List of annotated Packet objects.
+        diagnostics: List of diagnostic message strings.
+        annotator_found: True if a focus-specific annotator was used.
+    """
+    packets = parse_packets(text)
+    if not packets:
+        return [], [], False
+
+    annotator = get_annotator(focus)
+    if annotator is None:
+        return packets, [], False
+
+    if isinstance(annotator, list):
+        all_diags = []
+        for ann in annotator:
+            diags = ann.annotate(packets)
+            all_diags.extend(diags)
+    else:
+        all_diags = annotator.annotate(packets)
+
+    return packets, all_diags, True
+
+
+def prefilter(text, focus, max_chars=24000, packets=None, diags=None):
     """Produce an annotated, prefiltered log for LLM consumption.
 
     Steps:
-        1. Parse decoded btmon text into packets
+        1. Parse decoded btmon text into packets (or use pre-annotated)
         2. Run the focus-specific annotator(s) to tag packets
         3. Build output including key packets (full), context packets
            (header + annotation only if budget is tight), and skip
@@ -1068,31 +1140,26 @@ def prefilter(text, focus, max_chars=24000):
         text: Full decoded btmon output.
         focus: Focus area string (e.g. "Audio / LE Audio").
         max_chars: Character budget for the output.
+        packets: Optional pre-annotated Packet list (skips re-parsing).
+        diags: Optional pre-computed diagnostics list.
 
     Returns:
         (prefiltered_text, diagnostics_list)
         The prefiltered text is ready for LLM consumption.
         diagnostics_list contains absence errors and info messages.
     """
-    packets = parse_packets(text)
-    if not packets:
-        return text, []
-
-    # Get annotator(s) for this focus area
-    annotator = get_annotator(focus)
-    if annotator is None:
-        # No specific annotator -- return original text truncated
-        return text[:max_chars], []
-
-    # Run annotation
-    if isinstance(annotator, list):
-        # Multiple annotators (e.g. parent "Audio")
-        all_diags = []
-        for ann in annotator:
-            diags = ann.annotate(packets)
-            all_diags.extend(diags)
+    if packets is not None:
+        # Use pre-annotated data
+        all_diags = diags if diags is not None else []
+        if not packets:
+            return text, all_diags
     else:
-        all_diags = annotator.annotate(packets)
+        packets, all_diags, found = annotate_trace(text, focus)
+        if not packets:
+            return text, []
+        if not found:
+            # No specific annotator -- return original text truncated
+            return text[:max_chars], []
 
     # Separate packets by priority
     key_pkts = [p for p in packets if p.priority == "key"]
@@ -1186,6 +1253,79 @@ def prefilter(text, focus, max_chars=24000):
 
     body = "\n".join(output_parts)
     return header + body, all_diags
+
+
+def format_markdown(packets, diags, focus):
+    """Format annotation results as a GitHub-comment-ready markdown block.
+
+    Produces a key frames table with timestamps, frame numbers, and
+    semantic labels that can be referenced in the analysis step.
+
+    Args:
+        packets: List of Packet objects (already annotated).
+        diags: List of diagnostic strings from the annotator.
+        focus: Focus area string.
+
+    Returns:
+        Markdown string suitable for posting as a GitHub issue comment.
+    """
+    key_pkts = [p for p in packets if p.priority == "key"]
+    ctx_pkts = [p for p in packets if p.priority == "context"]
+    graceful = [p for p in packets
+                if "GRACEFUL_DISCONNECT" in p.tags]
+
+    lines = ["## Step 2: Annotation", ""]
+    lines.append(f"**Focus:** {focus}")
+    lines.append(f"**Packets:** {len(packets)} total, "
+                 f"{len(key_pkts)} key, {len(ctx_pkts)} context, "
+                 f"{len(packets) - len(key_pkts) - len(ctx_pkts)} skipped")
+    if packets:
+        span = packets[-1].timestamp - packets[0].timestamp
+        lines.append(f"**Time span:** {packets[0].timestamp:.3f}s - "
+                     f"{packets[-1].timestamp:.3f}s ({span:.1f}s)")
+    lines.append("")
+
+    # Key frames table
+    if key_pkts:
+        lines.append("### Key Frames")
+        lines.append("")
+        lines.append("| # | Timestamp | Tags | Description |")
+        lines.append("|--:|----------:|------|-------------|")
+        for pkt in key_pkts[:50]:
+            tags = ", ".join(f"`{t}`" for t in pkt.tags)
+            lines.append(
+                f"| #{pkt.frame} | {pkt.timestamp:.3f}s | "
+                f"{tags} | {pkt.annotation} |"
+            )
+        if len(key_pkts) > 50:
+            lines.append(f"| | | | "
+                         f"*... and {len(key_pkts) - 50} more* |")
+        lines.append("")
+
+    # Graceful disconnects (informational, not errors)
+    if graceful:
+        lines.append("### Graceful Disconnects")
+        lines.append("")
+        for pkt in graceful:
+            lines.append(
+                f"- #{pkt.frame} at {pkt.timestamp:.3f}s: "
+                f"{pkt.annotation}")
+        lines.append("")
+
+    # Diagnostics
+    if diags:
+        lines.append("### Diagnostics")
+        lines.append("")
+        for d in diags:
+            if d.startswith("ABSENCE:"):
+                lines.append(f"- :warning: {d}")
+            elif d.startswith("INFO:"):
+                lines.append(f"- :information_source: {d}")
+            else:
+                lines.append(f"- {d}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

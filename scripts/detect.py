@@ -499,6 +499,58 @@ def clip_for_focus(text, focus, context_packets=5, max_chars=30000):
     return text
 
 
+def format_markdown(results, focus_selected, auto_detected_focus=None):
+    """Format detection results as a GitHub-comment-ready markdown block.
+
+    Args:
+        results: List of DetectedArea from detect().
+        focus_selected: The focus area string selected (by user or auto).
+        auto_detected_focus: The auto-detected focus, if auto-detection ran.
+
+    Returns:
+        Markdown string suitable for posting as a GitHub issue comment.
+    """
+    lines = ["## Step 1: Detection", ""]
+
+    if auto_detected_focus:
+        lines.append(f"**Auto-detected focus:** {auto_detected_focus}")
+    else:
+        lines.append(f"**User-selected focus:** {focus_selected}")
+    lines.append("")
+
+    if not results:
+        lines.append("No protocol areas detected in the trace.")
+        return "\n".join(lines)
+
+    lines.append("| Area | Score | Activity | Errors | Absence Issues |")
+    lines.append("|------|------:|--------:|---------:|---------------|")
+
+    for det in results:
+        absence = "; ".join(det.absence_errors) if det.absence_errors else ""
+        marker = " :warning:" if det.has_errors else ""
+        lines.append(
+            f"| {det.area.focus}{marker} | {det.score} | "
+            f"{det.activity_count} | {det.error_count} | {absence} |"
+        )
+
+    lines.append("")
+
+    # Show absence errors as callouts
+    all_absence = []
+    for det in results:
+        for msg in det.absence_errors:
+            all_absence.append((det.area.focus, msg))
+
+    if all_absence:
+        lines.append("### Absence-Based Issues")
+        lines.append("")
+        for area, msg in all_absence:
+            lines.append(f"- **{area}:** {msg}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Standalone entry point
 # ---------------------------------------------------------------------------

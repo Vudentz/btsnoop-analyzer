@@ -146,6 +146,8 @@ jobs:
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'github' }}
           LLM_MODEL: ${{ vars.LLM_MODEL || '' }}
         run: |
+          mkdir -p results
+
           ANON_FLAG=""
           if [ "${{ steps.parse.outputs.anonymize }}" = "true" ]; then
             ANON_FLAG="--anonymize"
@@ -165,7 +167,35 @@ jobs:
             $ANON_FLAG \
             --btmon-path ./bluez/monitor/btmon \
             --docs-path ./bluez/doc/btmon.rst \
-            --output analysis-result.md
+            --output-dir results
+
+      - name: Post detection comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const detect = fs.readFileSync('results/detect.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: detect
+            });
+
+      - name: Post annotation comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const annotate = fs.readFileSync('results/annotate.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: annotate
+            });
 
       - name: Post analysis comment
         if: success()
@@ -173,14 +203,9 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const analysis = fs.readFileSync('analysis-result.md', 'utf8');
+            const analysis = fs.readFileSync('results/analyze.md', 'utf8');
 
-            const body = `## btsnoop Trace Analysis
-
-            ${analysis}
-
-            ---
-            <sub>Analyzed by [btsnoop-analyzer](https://github.com/${context.repo.owner}/${context.repo.repo}) using btmon from [BlueZ](https://github.com/bluez/bluez). MAC addresses ${
+            const footer = `\n\n---\n<sub>Analyzed by [btsnoop-analyzer](https://github.com/${context.repo.owner}/${context.repo.repo}) using btmon from [BlueZ](https://github.com/bluez/bluez). MAC addresses ${
               '${{ steps.parse.outputs.anonymize }}' === 'true'
                 ? 'were anonymized'
                 : 'were **not** anonymized (user opted out)'
@@ -190,7 +215,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: body
+              body: analysis + footer
             });
 
       - name: Post error comment

@@ -34,8 +34,10 @@ import urllib.request
 import urllib.error
 
 from detect import detect, clip_for_focus
+from detect import format_markdown as detect_markdown
 from templates import template_instructions
-from annotate import prefilter
+from annotate import prefilter, annotate_trace
+from annotate import format_markdown as annotate_markdown
 
 
 def log(msg):
@@ -440,7 +442,12 @@ def main():
     )
     parser.add_argument(
         "--output", default=None,
-        help="Write analysis to file instead of stdout"
+        help="Write LLM analysis to file instead of stdout"
+    )
+    parser.add_argument(
+        "--output-dir", default=None,
+        help="Directory for per-step output files "
+             "(detect.md, annotate.md, analyze.md)"
     )
     args = parser.parse_args()
 
@@ -475,14 +482,24 @@ def main():
 
     focus = args.focus
     auto_detected = False
+    auto_detected_focus = None
     absence_errors = []
+    detect_results = []
 
-    # Auto-detect problem area when user selects General analysis
+    def write_step(name, content):
+        """Write per-step output if --output-dir is set."""
+        if args.output_dir:
+            path = os.path.join(args.output_dir, f"{name}.md")
+            with open(path, "w") as f:
+                f.write(content)
+            log(f"Step output written to {path}")
+
+    # --- Step 1: Detection ---
     if focus == "General (full analysis)":
         log("Running auto-detection on decoded trace...")
-        detected = detect(decoded)
-        if detected:
-            for det in detected:
+        detect_results = detect(decoded)
+        if detect_results:
+            for det in detect_results:
                 marker = " ** ERRORS **" if det.has_errors else ""
                 log(f"  {det.area.name:15s}  score={det.score:4d}  "
                     f"activity={det.activity_count}  "
@@ -493,16 +510,26 @@ def main():
             # Pick the top area that has errors; if none have errors,
             # use the highest-scoring area
             top_error = next(
-                (d for d in detected if d.has_errors), None
+                (d for d in detect_results if d.has_errors), None
             )
-            top = top_error or detected[0]
+            top = top_error or detect_results[0]
 
             focus = top.area.focus
             absence_errors = top.absence_errors
             auto_detected = True
+            auto_detected_focus = focus
             log(f"Auto-detected focus: {focus}")
         else:
             log("No specific protocol area detected, using full trace")
+
+    # Write detection comment
+    detect_md = detect_markdown(
+        detect_results, focus, auto_detected_focus=auto_detected_focus)
+    write_step("detect", detect_md)
+
+    # --- Step 2: Annotation ---
+    annotated_packets = []
+    annotator_diags = []
 
     # Clip the log to the relevant section for the focus area.
     # Use the annotator-based prefilter when available — it does
@@ -510,10 +537,16 @@ def main():
     # Fall back to pattern-based clip_for_focus for areas without
     # a dedicated annotator, or truncate_for_context for General.
     if focus != "General (full analysis)":
-        prefiltered, annotator_diags = prefilter(
-            decoded, focus, max_chars=limits["trace"])
-        if annotator_diags or prefiltered != decoded:
-            # prefilter produced useful output
+        # First run annotation to get packets and diags for the
+        # annotation comment, then build the prefiltered log
+        annotated_packets, annotator_diags, annotator_found = \
+            annotate_trace(decoded, focus)
+
+        if annotator_found and (annotator_diags or annotated_packets):
+            # Build prefiltered log from already-annotated packets
+            prefiltered, _ = prefilter(
+                decoded, focus, max_chars=limits["trace"],
+                packets=annotated_packets, diags=annotator_diags)
             original_len = len(decoded)
             decoded = prefiltered
             absence_errors = absence_errors + annotator_diags
@@ -538,6 +571,12 @@ def main():
         decoded = truncate_for_context(decoded,
                                         max_chars=limits["trace"])
 
+    # Write annotation comment
+    annotate_md = annotate_markdown(
+        annotated_packets, annotator_diags, focus)
+    write_step("annotate", annotate_md)
+
+    # --- Step 3: LLM Analysis ---
     # Load docs (focus-specific when available)
     docs = load_docs(args.docs_path, focus=focus)
     docs = truncate_for_context(docs, max_chars=limits["docs"])
@@ -556,12 +595,18 @@ def main():
     provider_fn = PROVIDERS[args.provider]
     analysis = provider_fn(system_prompt, user_prompt, args.model)
 
+    # Wrap in a "Step 3" heading for consistency when using --output-dir
+    if args.output_dir:
+        analysis = f"## Step 3: LLM Analysis\n\n{analysis}"
+
     # Output
+    if args.output_dir:
+        write_step("analyze", analysis)
     if args.output:
         with open(args.output, "w") as f:
             f.write(analysis)
         log(f"Analysis written to {args.output}")
-    else:
+    elif not args.output_dir:
         print(analysis)
 
 
