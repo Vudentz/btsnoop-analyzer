@@ -101,25 +101,39 @@ Or decode a local file directly:
 btsnoop-analyzer/
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
-│   │   └── analyze-trace.yml    # Issue template with trace upload form
+│   │   └── analyze-trace.yml    # Issue form: trace upload, description, focus
 │   └── workflows/
-│       └── analyze-trace.yml    # GitHub Actions workflow
+│       └── analyze-trace.yml    # CI workflow: build btmon, run analysis, post comment
 ├── scripts/
-│   ├── analyze.py               # Main analysis script
-│   └── anonymize.sh             # MAC address anonymization
+│   ├── analyze.py               # Main entry: download, decode, anonymize, prompt, call LLM
+│   ├── detect.py                # Auto-detection: area scoring, absence checks, log clipping
+│   ├── annotate.py              # Packet parser + 8 focus-specific annotators + prefilter
+│   ├── templates.py             # Structured output templates per focus area
+│   └── anonymize.sh             # Shell-based MAC anonymization (standalone use)
+├── ARCHITECTURE.md              # Pipeline architecture documentation
 └── README.md
 ```
 
+For a detailed walkthrough of how the analysis pipeline works — from
+issue submission to posted diagnostic report — see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Analysis Report Format
 
-The LLM produces a structured report with:
+The LLM produces a structured report using focus-area-specific templates
+(`scripts/templates.py`) that enforce consistent output. Each report includes:
 
-- **Summary** — What happened in 1-3 sentences
-- **Connection Timeline** — Key events in chronological order
-- **Protocol Analysis** — Detailed analysis of the focus area with specific
-  handle values, opcodes, and error codes
-- **Issues Found** — Errors, unexpected behavior, or protocol violations
+- **Summary** — Verdict and one-line description
+- **Protocol-Specific Tables** — Codec configuration, state transitions,
+  connection parameters, etc. (varies by focus area)
+- **Event Timeline** — Key events with timestamps and handle values
+- **Issues Found** — Errors, protocol violations, absence-based issues
+  (expected events that never occurred)
 - **Recommendations** — Actionable debugging suggestions
+
+When the user selects "General (full analysis)", the analyzer auto-detects
+the relevant protocol area from error patterns and protocol activity in the
+trace, then applies the matching template and documentation.
 
 ## Knowledge Base
 

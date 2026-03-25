@@ -35,6 +35,7 @@ import urllib.error
 
 from detect import detect, clip_for_focus
 from templates import template_instructions
+from annotate import prefilter
 
 
 def log(msg):
@@ -197,22 +198,33 @@ def build_prompt(decoded_text, docs_text, description, focus,
                  auto_detected=False, absence_errors=None):
     """Build the analysis prompt for the LLM."""
     clip_note = ""
-    if auto_detected:
-        clip_note = (
-            "\n\nNote: The focus area was auto-detected from error "
-            "patterns in the trace. The trace below has been clipped to "
-            "show only the sections relevant to the detected problem "
-            "area, with surrounding context packets preserved. Lines "
-            "marked '[... N lines skipped ...]' indicate gaps between "
-            "relevant sections."
-        )
+    if auto_detected or absence_errors:
+        if "=== Prefiltered btmon log:" in decoded_text:
+            clip_note = (
+                "\n\nNote: The trace below has been prefiltered with "
+                "protocol-aware annotation. Key packets are shown with "
+                "full body and semantic labels (e.g. [CIS_ESTABLISHED], "
+                "[AVDTP_START]). Context packets show header-only. "
+                "Lines like '[... N packets skipped ...]' indicate "
+                "omitted bulk data. A summary header at the top "
+                "lists diagnostics and a key event timeline."
+            )
+        elif auto_detected:
+            clip_note = (
+                "\n\nNote: The focus area was auto-detected from error "
+                "patterns in the trace. The trace below has been clipped to "
+                "show only the sections relevant to the detected problem "
+                "area, with surrounding context packets preserved. Lines "
+                "marked '[... N lines skipped ...]' indicate gaps between "
+                "relevant sections."
+            )
         if absence_errors:
             hints = "\n".join(f"  - {msg}" for msg in absence_errors)
             clip_note += (
-                "\n\nThe auto-detector identified these protocol-flow "
-                "gaps (expected events that never appeared):\n"
+                "\n\nThe analyzer identified these protocol-flow "
+                "issues:\n"
                 f"{hints}\n"
-                "Investigate these gaps as likely root causes."
+                "Investigate these as likely root causes."
             )
 
     system_prompt = f"""You are a Bluetooth protocol analyst specializing in \
@@ -493,24 +505,38 @@ def main():
             log("No specific protocol area detected, using full trace")
 
     # Clip the log to the relevant section for the focus area.
-    # This extracts packets around pattern matches rather than blind
-    # head/tail truncation, so the LLM sees the exact problem context.
+    # Use the annotator-based prefilter when available — it does
+    # protocol-aware packet annotation and budget-aware filtering.
+    # Fall back to pattern-based clip_for_focus for areas without
+    # a dedicated annotator, or truncate_for_context for General.
     if focus != "General (full analysis)":
-        clipped = clip_for_focus(decoded, focus,
-                                 max_chars=limits["trace"])
-        if clipped != decoded:
+        prefiltered, annotator_diags = prefilter(
+            decoded, focus, max_chars=limits["trace"])
+        if annotator_diags or prefiltered != decoded:
+            # prefilter produced useful output
             original_len = len(decoded)
-            decoded = clipped
-            log(f"Clipped trace: {len(decoded)} chars "
+            decoded = prefiltered
+            absence_errors = absence_errors + annotator_diags
+            log(f"Prefiltered trace: {len(decoded)} chars "
                 f"({len(decoded) * 100 // original_len}% of "
-                f"{original_len} chars)")
+                f"{original_len} chars), "
+                f"{len(annotator_diags)} annotator diagnostics")
         else:
-            # No clip matches — fall back to standard truncation
-            decoded = truncate_for_context(decoded,
-                                           max_chars=limits["trace"])
+            # No annotator for this area — try pattern-based clipping
+            clipped = clip_for_focus(decoded, focus,
+                                     max_chars=limits["trace"])
+            if clipped != decoded:
+                original_len = len(decoded)
+                decoded = clipped
+                log(f"Clipped trace: {len(decoded)} chars "
+                    f"({len(decoded) * 100 // original_len}% of "
+                    f"{original_len} chars)")
+            else:
+                decoded = truncate_for_context(decoded,
+                                               max_chars=limits["trace"])
     else:
         decoded = truncate_for_context(decoded,
-                                       max_chars=limits["trace"])
+                                        max_chars=limits["trace"])
 
     # Load docs (focus-specific when available)
     docs = load_docs(args.docs_path, focus=focus)
