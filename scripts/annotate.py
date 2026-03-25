@@ -281,6 +281,18 @@ class LEAudioAnnotator(Annotator):
 
     name = "le_audio"
 
+    # ASE Control Point opcodes (BAP spec Table 5.2)
+    _ASE_OPCODES = {
+        0x01: "Config Codec",
+        0x02: "Config QoS",
+        0x03: "Enable",
+        0x04: "Receiver Start Ready",
+        0x05: "Disable",
+        0x06: "Receiver Stop Ready",
+        0x07: "Update Metadata",
+        0x08: "Release",
+    }
+
     def __init__(self):
         self.saw_pa_sync = False
         self.saw_big_info = False
@@ -292,7 +304,110 @@ class LEAudioAnnotator(Annotator):
         self.saw_create_cis = False
         self.saw_setup_iso = False
         self.saw_iso_data = False
+        self.saw_coding_format = False
         self.cis_data_count = 0
+        self.ase_cp_handle = None   # handle used for ASE Control Point writes
+        self.ase_state_handle = None  # handle used for ASE state notifications
+
+    @staticmethod
+    def _extract_att_data(body_lines):
+        """Extract ATT handle and first data bytes from body lines.
+
+        Returns (handle_str, data_bytes) or (None, None).
+        handle_str is e.g. "0x0095", data_bytes is a list of ints.
+        """
+        handle = None
+        data_bytes = []
+        in_data = False
+        for line in body_lines:
+            stripped = line.strip()
+            hm = re.match(r'Handle:\s*(0x[0-9a-fA-F]+)', stripped)
+            if hm and handle is None:
+                handle = hm.group(1)
+            if re.match(r'Data\[\d+\]:', stripped):
+                in_data = True
+                continue
+            if in_data:
+                # Data lines look like: "01 02 03 ... <ascii>"
+                # Extract hex bytes (stop at double-space or ASCII)
+                hex_part = re.match(r'((?:[0-9a-fA-F]{2}\s+)+)', stripped)
+                if hex_part:
+                    data_bytes.extend(
+                        int(b, 16) for b in hex_part.group(1).split()
+                    )
+                in_data = False
+        return handle, data_bytes
+
+    def _try_decode_ase_cp_write(self, pkt, body_text):
+        """Check if pkt is an ATT Write Command to the ASE Control Point.
+
+        btmon doesn't decode LE Audio GATT-level operations; it only
+        shows raw ATT: Write Command with hex data.  We decode the ASE
+        Control Point opcode from the first byte of the data payload.
+
+        Returns True if the packet was tagged as an ASE operation.
+        """
+        if "ATT: Write Command" not in body_text:
+            return False
+        handle, data = self._extract_att_data(pkt.body)
+        if not handle or not data:
+            return False
+        opcode = data[0]
+        op_name = self._ASE_OPCODES.get(opcode)
+        if op_name is None:
+            return False
+        # Validate: second byte should be num_ase (1-4 typical)
+        if len(data) >= 2 and not (1 <= data[1] <= 8):
+            return False
+        self.ase_cp_handle = handle
+        self._tag(pkt, "ASE_CONTROL",
+                  annotation=f"ASE Control Point: {op_name}")
+        self.saw_ase_control = True
+        return True
+
+    def _try_decode_ase_notification(self, pkt, body_text):
+        """Check if pkt is an ATT notification related to ASE state.
+
+        ASE CP response notifications come from the CP handle (0x0095).
+        ASE state notifications come from a different handle (0x0089)
+        on the same ACL connection.
+
+        Returns True if the packet was tagged.
+        """
+        if "ATT: Handle Value Notification" not in body_text:
+            return False
+        handle, data = self._extract_att_data(pkt.body)
+        if not handle or not data:
+            return False
+
+        if self.ase_cp_handle and handle == self.ase_cp_handle:
+            # CP response notification — opcode echo + status
+            opcode = data[0]
+            op_name = self._ASE_OPCODES.get(opcode, f"op 0x{opcode:02x}")
+            status = "Success" if len(data) >= 4 and data[3] == 0 else "?"
+            self._tag(pkt, "ASE_CP_RESPONSE", priority="context",
+                      annotation=f"ASE CP response: {op_name} ({status})")
+            return True
+
+        if self.ase_cp_handle and handle != self.ase_cp_handle:
+            # Likely ASE state notification from ASE characteristic
+            self.ase_state_handle = handle
+            # data[0] = ASE_ID, data[1] = state
+            ase_states = {
+                0x00: "Idle", 0x01: "Codec Configured",
+                0x02: "QoS Configured", 0x03: "Enabling",
+                0x04: "Streaming", 0x05: "Disabling",
+            }
+            ase_id = data[0] if data else "?"
+            state_val = data[1] if len(data) >= 2 else None
+            state_name = ase_states.get(state_val,
+                                        f"0x{state_val:02x}" if state_val
+                                        is not None else "?")
+            self._tag(pkt, "ASE_STATE", priority="context",
+                      annotation=f"ASE ID {ase_id} state: {state_name}")
+            return True
+
+        return False
 
     def annotate_packet(self, pkt):
         s = pkt.summary
@@ -378,6 +493,16 @@ class LEAudioAnnotator(Annotator):
             self._tag(pkt, "ASE_STATE", priority="context",
                       annotation=f"ASE state: {state}")
 
+        # --- Raw ATT fallback for ASE operations ---
+        # btmon does not decode LE Audio GATT-level operations; it
+        # only shows raw ATT: Write Command / Handle Value Notification.
+        # Decode ASE Control Point opcodes from the first data byte.
+        elif self._try_decode_ase_cp_write(pkt, body_text):
+            pass  # tagged inside helper
+
+        elif self._try_decode_ase_notification(pkt, body_text):
+            pass  # tagged inside helper
+
         elif "Set CIG Parameters" in full:
             self._tag(pkt, "SET_CIG",
                       annotation="CIG parameters configured")
@@ -410,8 +535,15 @@ class LEAudioAnnotator(Annotator):
             self.saw_create_cis = True
 
         elif "Setup ISO" in full or "Setup Isochrono" in full:
+            # Capture the coding format if present
+            fmt_m = re.search(r"Coding Format:\s*(.+?)(?:\s*$)",
+                              body_text, re.MULTILINE)
+            fmt_note = ""
+            if fmt_m:
+                fmt_note = f" (Coding Format: {fmt_m.group(1).strip()})"
+                self.saw_coding_format = True
             self._tag(pkt, "SETUP_ISO_PATH",
-                      annotation="ISO data path configured")
+                      annotation=f"ISO data path configured{fmt_note}")
             self.saw_setup_iso = True
 
         elif re.match(r'[<>]\s*LE-CIS:', pkt._raw_header) or \
@@ -484,11 +616,13 @@ class LEAudioAnnotator(Annotator):
                 "ABSENCE: ISO data path set up but no ISO data "
                 "packets observed.")
 
-        # Summary annotation for ISO data
+        # Summary annotation for ISO data (explicitly normal -- prevents
+        # the LLM from flagging normal streaming volume as a problem).
         if self.cis_data_count > 0:
             diags.append(
-                f"INFO: {self.cis_data_count} ISO/CIS data packets "
-                f"observed (bulk data omitted from prefiltered log).")
+                f"NOTE: {self.cis_data_count} ISO/CIS data packets "
+                f"were streamed (normal LE Audio traffic, bulk data "
+                f"omitted from prefiltered log).")
 
         return diags
 
