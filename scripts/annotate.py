@@ -21,6 +21,7 @@ Usage standalone (for debugging):
 
 import re
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 
@@ -293,6 +294,30 @@ class LEAudioAnnotator(Annotator):
         0x08: "Release",
     }
 
+    # Valid ASE state machine transitions triggered by each opcode.
+    # Maps opcode -> set of opcodes that may legally precede it.
+    # Config Codec can appear from Idle (start) or after Release.
+    _VALID_PREDECESSORS = {
+        0x01: {None, 0x08},       # Idle -> Config Codec
+        0x02: {0x01},             # Codec Configured -> Config QoS
+        0x03: {0x02, 0x05},       # QoS Configured -> Enable (also after Disable)
+        0x04: {0x03},             # Enabling -> Receiver Start Ready
+        0x05: {0x03, 0x04, 0x07}, # Streaming/Enabling -> Disable
+        0x06: {0x05},             # Disabling -> Receiver Stop Ready
+        0x07: {0x03, 0x04},       # Streaming -> Update Metadata
+        0x08: {0x05, 0x06, 0x01, 0x02, 0x03, 0x04, 0x07},  # Release from most states
+    }
+
+    # ASE state values in state notification
+    _ASE_STATES = {
+        0x00: "Idle",
+        0x01: "Codec Configured",
+        0x02: "QoS Configured",
+        0x03: "Enabling",
+        0x04: "Streaming",
+        0x05: "Disabling",
+    }
+
     def __init__(self):
         self.saw_pa_sync = False
         self.saw_big_info = False
@@ -306,8 +331,14 @@ class LEAudioAnnotator(Annotator):
         self.saw_iso_data = False
         self.saw_coding_format = False
         self.cis_data_count = 0
-        self.ase_cp_handle = None   # handle used for ASE Control Point writes
-        self.ase_state_handle = None  # handle used for ASE state notifications
+        self.ase_cp_handle = None   # confirmed ASE CP handle
+        self.ase_state_handle = None  # confirmed ASE state handle
+        # Candidate ATT writes/notifications buffered before confirmation
+        # Each entry: (pkt, handle, opcode, data_bytes)
+        self._ase_candidates = []
+        # Candidate notifications: (pkt, handle, data_bytes)
+        self._notify_candidates = []
+        self._ase_confirmed = False
 
     @staticmethod
     def _extract_att_data(body_lines):
@@ -338,41 +369,41 @@ class LEAudioAnnotator(Annotator):
                 in_data = False
         return handle, data_bytes
 
-    def _try_decode_ase_cp_write(self, pkt, body_text):
-        """Check if pkt is an ATT Write Command to the ASE Control Point.
+    def _buffer_att_write(self, pkt, body_text):
+        """Buffer an ATT Write Command as an ASE CP candidate.
 
-        btmon doesn't decode LE Audio GATT-level operations; it only
-        shows raw ATT: Write Command with hex data.  We decode the ASE
-        Control Point opcode from the first byte of the data payload.
-
-        Returns True if the packet was tagged as an ASE operation.
+        Returns True if the packet was handled (either buffered and
+        confirmed, or immediately tagged post-confirmation).
         """
-        if "ATT: Write Command" not in body_text:
+        if "ATT: Write Command" not in body_text and \
+                "ATT: Write Request" not in body_text:
             return False
         handle, data = self._extract_att_data(pkt.body)
         if not handle or not data:
             return False
         opcode = data[0]
-        op_name = self._ASE_OPCODES.get(opcode)
-        if op_name is None:
+        if opcode not in self._ASE_OPCODES:
             return False
-        # Validate: second byte should be num_ase (1-4 typical)
+        # Basic sanity: byte 1 = num_ase (1-4 typical)
         if len(data) >= 2 and not (1 <= data[1] <= 8):
             return False
-        self.ase_cp_handle = handle
-        self._tag(pkt, "ASE_CONTROL",
-                  annotation=f"ASE Control Point: {op_name}")
-        self.saw_ase_control = True
-        return True
 
-    def _try_decode_ase_notification(self, pkt, body_text):
-        """Check if pkt is an ATT notification related to ASE state.
+        if self._ase_confirmed:
+            # Already confirmed — tag immediately if same handle
+            if handle == self.ase_cp_handle:
+                self._tag_ase_write(pkt, handle, opcode, data)
+                return True
+            return False
 
-        ASE CP response notifications come from the CP handle (0x0095).
-        ASE state notifications come from a different handle (0x0089)
-        on the same ACL connection.
+        # Buffer and check for confirmation
+        self._ase_candidates.append((pkt, handle, opcode, data))
+        self._check_ase_confirmation()
+        return self._ase_confirmed
 
-        Returns True if the packet was tagged.
+    def _buffer_att_notification(self, pkt, body_text):
+        """Buffer an ATT Handle Value Notification as ASE candidate.
+
+        Returns True if the packet was handled.
         """
         if "ATT: Handle Value Notification" not in body_text:
             return False
@@ -380,34 +411,197 @@ class LEAudioAnnotator(Annotator):
         if not handle or not data:
             return False
 
-        if self.ase_cp_handle and handle == self.ase_cp_handle:
-            # CP response notification — opcode echo + status
+        if self._ase_confirmed:
+            # Already confirmed — tag immediately if on known handles
+            if handle == self.ase_cp_handle or \
+                    handle == self.ase_state_handle or \
+                    (self.ase_cp_handle and handle != self.ase_cp_handle
+                     and self.ase_state_handle is None):
+                self._tag_ase_notification(pkt, handle, data)
+                return True
+            return False
+
+        # Buffer for later
+        self._notify_candidates.append((pkt, handle, data))
+        return False  # not yet confirmed, let other checks try
+
+    def _check_ase_confirmation(self):
+        """Check if buffered candidates confirm ASE CP on a handle.
+
+        Confirmation requires writes to the same handle with opcodes
+        that follow valid ASE state machine transitions.  We need at
+        least 2 writes with a valid predecessor relationship.
+        """
+        if self._ase_confirmed:
+            return
+        # Group candidates by handle
+        by_handle = defaultdict(list)
+        for _, handle, opcode, data in self._ase_candidates:
+            by_handle[handle].append(opcode)
+
+        for handle, opcodes in by_handle.items():
+            if len(opcodes) < 2:
+                continue
+            # Check sequential validity: each opcode should be a valid
+            # successor of the previous one
+            valid_transitions = 0
+            prev = None
+            for op in opcodes:
+                if prev is not None:
+                    predecessors = self._VALID_PREDECESSORS.get(op, set())
+                    if prev in predecessors:
+                        valid_transitions += 1
+                prev = op
+            # Need at least 1 valid transition between consecutive
+            # opcodes (not counting the initial Idle -> first opcode),
+            # and the sequence must start with Config Codec (0x01).
+            if valid_transitions >= 1 and opcodes[0] == 0x01:
+                self.ase_cp_handle = handle
+                self._ase_confirmed = True
+                self._flush_ase_candidates()
+                return
+
+    def _flush_ase_candidates(self):
+        """Tag all buffered candidates now that ASE CP is confirmed."""
+        # Tag writes
+        for pkt, handle, opcode, data in self._ase_candidates:
+            if handle == self.ase_cp_handle:
+                op_name = self._ASE_OPCODES.get(opcode, f"0x{opcode:02x}")
+                self._tag(pkt, "ASE_CONTROL",
+                          annotation=f"ASE Control Point: {op_name}")
+                self.saw_ase_control = True
+                self._inject_ase_decode(pkt, opcode, data)
+
+        # Tag notifications
+        for pkt, handle, data in self._notify_candidates:
+            self._tag_ase_notification(pkt, handle, data)
+
+    def _tag_ase_write(self, pkt, handle, opcode, data):
+        """Tag an ASE CP write packet (post-confirmation)."""
+        op_name = self._ASE_OPCODES.get(opcode, f"0x{opcode:02x}")
+        self._tag(pkt, "ASE_CONTROL",
+                  annotation=f"ASE Control Point: {op_name}")
+        self.saw_ase_control = True
+        self._inject_ase_decode(pkt, opcode, data)
+
+    def _tag_ase_notification(self, pkt, handle, data):
+        """Tag an ATT notification as ASE CP response or state change."""
+        if handle == self.ase_cp_handle:
+            # CP response: [opcode, num_ase, ase_id, response_code, reason]
             opcode = data[0]
             op_name = self._ASE_OPCODES.get(opcode, f"op 0x{opcode:02x}")
             status = "Success" if len(data) >= 4 and data[3] == 0 else "?"
             self._tag(pkt, "ASE_CP_RESPONSE", priority="context",
                       annotation=f"ASE CP response: {op_name} ({status})")
-            return True
-
-        if self.ase_cp_handle and handle != self.ase_cp_handle:
-            # Likely ASE state notification from ASE characteristic
+            self._inject_cp_response_decode(pkt, data)
+        elif self.ase_state_handle is None or handle == self.ase_state_handle:
+            # ASE state notification: [ase_id, state, ...]
             self.ase_state_handle = handle
-            # data[0] = ASE_ID, data[1] = state
-            ase_states = {
-                0x00: "Idle", 0x01: "Codec Configured",
-                0x02: "QoS Configured", 0x03: "Enabling",
-                0x04: "Streaming", 0x05: "Disabling",
-            }
             ase_id = data[0] if data else "?"
             state_val = data[1] if len(data) >= 2 else None
-            state_name = ase_states.get(state_val,
-                                        f"0x{state_val:02x}" if state_val
-                                        is not None else "?")
+            state_name = self._ASE_STATES.get(
+                state_val,
+                f"0x{state_val:02x}" if state_val is not None else "?")
             self._tag(pkt, "ASE_STATE", priority="context",
                       annotation=f"ASE ID {ase_id} state: {state_name}")
-            return True
+            self._inject_ase_state_decode(pkt, data)
 
-        return False
+    @staticmethod
+    def _inject_ase_decode(pkt, opcode, data):
+        """Inject decoded ASE CP fields into the packet body.
+
+        Inserts human-readable lines after the ATT header so the LLM
+        sees the decoded operation instead of raw hex.
+        """
+        opcodes = LEAudioAnnotator._ASE_OPCODES
+        op_name = opcodes.get(opcode, f"0x{opcode:02x}")
+        num_ase = data[1] if len(data) >= 2 else "?"
+        ase_id = data[2] if len(data) >= 3 else "?"
+        decoded = [
+            f"        [Decoded] ASE Control Point: {op_name} (0x{opcode:02x})",
+            f"        [Decoded]   Num ASE: {num_ase}, ASE ID: {ase_id}",
+        ]
+        # For Config Codec, decode codec ID
+        # Format: [opcode, num_ase, ase_id, target_latency, target_phy,
+        #          coding_format, company_id(2), vendor_codec_id(2),
+        #          cc_length, cc(...)]
+        if opcode == 0x01 and len(data) >= 8:
+            target_latency = data[3]
+            target_names = {1: "Low Latency", 2: "Balanced",
+                            3: "High Reliability"}
+            tl_name = target_names.get(target_latency,
+                                       f"0x{target_latency:02x}")
+            coding_format = data[5]
+            codec_names = {0x06: "LC3", 0x03: "Transparent",
+                           0xFF: "Vendor Specific"}
+            codec_name = codec_names.get(coding_format,
+                                         f"0x{coding_format:02x}")
+            decoded.append(
+                f"        [Decoded]   Target Latency: {tl_name}, "
+                f"Codec: {codec_name} (0x{coding_format:02x})")
+        # For Config QoS, decode CIG/CIS IDs
+        if opcode == 0x02 and len(data) >= 5:
+            cig_id = data[3]
+            cis_id = data[4]
+            decoded.append(
+                f"        [Decoded]   CIG ID: 0x{cig_id:02x}, "
+                f"CIS ID: 0x{cis_id:02x}")
+        # Insert after the first ATT line in body
+        insert_pos = 0
+        for i, line in enumerate(pkt.body):
+            if "ATT:" in line:
+                insert_pos = i + 1
+                break
+        pkt.body[insert_pos:insert_pos] = decoded
+
+    @staticmethod
+    def _inject_cp_response_decode(pkt, data):
+        """Inject decoded CP response fields into the packet body."""
+        opcodes = LEAudioAnnotator._ASE_OPCODES
+        opcode = data[0] if data else 0
+        op_name = opcodes.get(opcode, f"0x{opcode:02x}")
+        num_ase = data[1] if len(data) >= 2 else "?"
+        ase_id = data[2] if len(data) >= 3 else "?"
+        resp_code = data[3] if len(data) >= 4 else "?"
+        resp_names = {0x00: "Success", 0x01: "Unsupported Opcode",
+                      0x02: "Invalid Length", 0x03: "Invalid ASE ID",
+                      0x04: "Invalid ASE State", 0x05: "Invalid ASE Direction",
+                      0x06: "Unsupported Audio Capabilities",
+                      0x07: "Unsupported Configuration", 0x08: "Rejected",
+                      0x09: "Invalid Configuration"}
+        resp_name = resp_names.get(resp_code, f"0x{resp_code:02x}") \
+            if isinstance(resp_code, int) else "?"
+        decoded = [
+            f"        [Decoded] ASE CP Response: {op_name} (0x{opcode:02x})",
+            f"        [Decoded]   Num ASE: {num_ase}, ASE ID: {ase_id}, "
+            f"Response: {resp_name}",
+        ]
+        insert_pos = 0
+        for i, line in enumerate(pkt.body):
+            if "ATT:" in line:
+                insert_pos = i + 1
+                break
+        pkt.body[insert_pos:insert_pos] = decoded
+
+    @staticmethod
+    def _inject_ase_state_decode(pkt, data):
+        """Inject decoded ASE state fields into the packet body."""
+        states = LEAudioAnnotator._ASE_STATES
+        ase_id = data[0] if data else "?"
+        state_val = data[1] if len(data) >= 2 else None
+        state_name = states.get(state_val,
+                                f"0x{state_val:02x}" if state_val is not None
+                                else "?")
+        decoded = [
+            f"        [Decoded] ASE Status: ASE ID {ase_id}, "
+            f"State: {state_name}",
+        ]
+        insert_pos = 0
+        for i, line in enumerate(pkt.body):
+            if "ATT:" in line:
+                insert_pos = i + 1
+                break
+        pkt.body[insert_pos:insert_pos] = decoded
 
     def annotate_packet(self, pkt):
         s = pkt.summary
@@ -494,14 +688,17 @@ class LEAudioAnnotator(Annotator):
                       annotation=f"ASE state: {state}")
 
         # --- Raw ATT fallback for ASE operations ---
-        # btmon does not decode LE Audio GATT-level operations; it
-        # only shows raw ATT: Write Command / Handle Value Notification.
-        # Decode ASE Control Point opcodes from the first data byte.
-        elif self._try_decode_ase_cp_write(pkt, body_text):
-            pass  # tagged inside helper
+        # When GATT discovery is absent, btmon cannot decode LE Audio
+        # GATT operations.  Buffer ATT Write Commands whose first data
+        # byte matches an ASE CP opcode (0x01-0x08) and confirm only
+        # when we see a state-machine-valid sequence on the same handle.
+        # Once confirmed, retroactively tag buffered packets and inject
+        # decoded fields so the LLM can understand the operations.
+        elif self._buffer_att_write(pkt, body_text):
+            pass  # tagged inside helper once confirmed
 
-        elif self._try_decode_ase_notification(pkt, body_text):
-            pass  # tagged inside helper
+        elif self._buffer_att_notification(pkt, body_text):
+            pass  # tagged inside helper once confirmed
 
         elif "Set CIG Parameters" in full:
             self._tag(pkt, "SET_CIG",
