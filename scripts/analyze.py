@@ -33,7 +33,7 @@ import tempfile
 import urllib.request
 import urllib.error
 
-from detect import detect, clip_for_focus
+from detect import detect, clip_for_focus, select_focus
 from detect import format_markdown as detect_markdown
 from templates import template_instructions
 from annotate import prefilter, annotate_trace
@@ -160,6 +160,65 @@ FOCUS_DOCS = {
     "Advertising / Scanning": ["btmon-advertising.rst"],
     "Disconnection analysis": ["btmon-connections.rst"],
 }
+
+
+# Canonical focus area names.  Keys must match FOCUS_DOCS, TEMPLATES,
+# and ANNOTATORS exactly.
+_KNOWN_FOCUS = set(FOCUS_DOCS.keys()) | {"General (full analysis)"}
+
+# Map common free-text variations to canonical keys.
+_FOCUS_ALIASES = {
+    "audio streaming (a2dp / le audio)": "Audio",
+    "audio streaming":                   "Audio",
+    "a2dp":                              "Audio / A2DP",
+    "le audio":                          "Audio / LE Audio",
+    "hfp":                               "Audio / HFP",
+    "connection":                        "Connection issues",
+    "connections":                       "Connection issues",
+    "pairing":                           "Pairing / Security",
+    "security":                          "Pairing / Security",
+    "smp":                               "Pairing / Security",
+    "gatt":                              "GATT discovery",
+    "advertising":                       "Advertising / Scanning",
+    "scanning":                          "Advertising / Scanning",
+    "l2cap":                             "L2CAP channel issues",
+    "disconnect":                        "Disconnection analysis",
+    "disconnection":                     "Disconnection analysis",
+    "general":                           "General (full analysis)",
+}
+
+
+def normalize_focus(raw):
+    """Map user-provided focus string to a canonical focus area key.
+
+    If the string is already a known key, return it unchanged.
+    Otherwise, try case-insensitive alias matching, then substring
+    matching against known keys.  Falls back to General if nothing
+    matches.
+    """
+    if raw in _KNOWN_FOCUS:
+        return raw
+
+    lower = raw.lower().strip()
+
+    # Exact alias match (case-insensitive)
+    if lower in _FOCUS_ALIASES:
+        return _FOCUS_ALIASES[lower]
+
+    # Substring match: e.g. "Audio streaming (A2DP / LE Audio)"
+    # contains "a2dp" and "le audio"
+    for alias, canonical in sorted(_FOCUS_ALIASES.items(),
+                                   key=lambda x: -len(x[0])):
+        if alias in lower:
+            return canonical
+
+    # Substring match against canonical keys
+    for key in _KNOWN_FOCUS:
+        if key.lower() in lower or lower in key.lower():
+            return key
+
+    log(f"Warning: unrecognized focus '{raw}', using General")
+    return "General (full analysis)"
 
 
 def load_docs(docs_path, focus=None):
@@ -495,7 +554,9 @@ def main():
     }
     limits = CONTEXT_LIMITS.get(args.provider, CONTEXT_LIMITS["openai"])
 
-    focus = args.focus
+    focus = normalize_focus(args.focus)
+    if focus != args.focus:
+        log(f"Normalized focus: '{args.focus}' -> '{focus}'")
     auto_detected = False
     auto_detected_focus = None
     absence_errors = []
@@ -510,32 +571,59 @@ def main():
             log(f"Step output written to {path}")
 
     # --- Step 1: Detection ---
+    # Always run detection to get area scores and coexistence info.
+    # When focus is General, auto-detect picks the best area.
+    # When user provides a focus, detection still runs for diagnostics.
+    log("Running detection on decoded trace...")
+    detect_results = detect(decoded)
+    if detect_results:
+        for det in detect_results:
+            marker = " ** ERRORS **" if det.has_errors else ""
+            log(f"  {det.area.name:15s}  score={det.score:4d}  "
+                f"activity={det.activity_count}  "
+                f"errors={det.error_count}{marker}")
+            for msg in det.absence_errors:
+                log(f"  {'':15s}  ABSENCE: {msg}")
+
     if focus == "General (full analysis)":
-        log("Running auto-detection on decoded trace...")
-        detect_results = detect(decoded)
         if detect_results:
-            for det in detect_results:
-                marker = " ** ERRORS **" if det.has_errors else ""
-                log(f"  {det.area.name:15s}  score={det.score:4d}  "
-                    f"activity={det.activity_count}  "
-                    f"errors={det.error_count}{marker}")
-                for msg in det.absence_errors:
-                    log(f"  {'':15s}  ABSENCE: {msg}")
-
-            # Pick the top area that has errors; if none have errors,
-            # use the highest-scoring area
-            top_error = next(
-                (d for d in detect_results if d.has_errors), None
-            )
-            top = top_error or detect_results[0]
-
-            focus = top.area.focus
-            absence_errors = top.absence_errors
+            # Use select_focus() for smarter area selection:
+            # prefers audio over background, detects coexistence
+            focus, absence_errors, coexistence = \
+                select_focus(detect_results)
             auto_detected = True
             auto_detected_focus = focus
             log(f"Auto-detected focus: {focus}")
+            for note in coexistence:
+                log(f"  COEXISTENCE: {note}")
+                absence_errors.append(f"COEXISTENCE: {note}")
         else:
             log("No specific protocol area detected, using full trace")
+    else:
+        # User provided a focus — still check for coexistence
+        if detect_results:
+            by_name = {d.area.name: d for d in detect_results}
+            from detect import _check_adv_coexistence, _AUDIO_AREAS
+            # Find the detected area(s) matching the user's focus
+            coexistence = []
+            if focus == "Audio":
+                # Combined Audio focus — check coexistence against
+                # all active audio areas
+                audio_areas = [d for d in detect_results
+                               if d.area.name in _AUDIO_AREAS]
+                if audio_areas:
+                    _check_adv_coexistence(
+                        by_name, audio_areas, coexistence)
+            else:
+                focus_area = next(
+                    (d for d in detect_results if d.area.focus == focus),
+                    None)
+                if focus_area:
+                    _check_adv_coexistence(
+                        by_name, focus_area, coexistence)
+            for note in coexistence:
+                log(f"  COEXISTENCE: {note}")
+                absence_errors.append(f"COEXISTENCE: {note}")
 
     # Write detection comment
     detect_md = detect_markdown(

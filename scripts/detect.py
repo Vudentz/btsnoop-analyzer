@@ -343,6 +343,114 @@ def detect(text):
 
 
 # ---------------------------------------------------------------------------
+# Focus selection
+# ---------------------------------------------------------------------------
+
+# Audio area names — these are the real substance of most traces
+_AUDIO_AREAS = {"a2dp", "hfp", "le_audio"}
+
+# Background areas — high activity doesn't indicate focus
+_BACKGROUND_AREAS = {"advertising", "hci_init"}
+
+# Threshold: advertising activity >= this alongside an audio session
+# is worth noting as a potential coexistence concern
+_ADV_COEXISTENCE_THRESHOLD = 50
+
+
+def select_focus(results):
+    """Choose the best focus area from detection results.
+
+    Returns (focus_string, absence_errors, coexistence_notes) where:
+    - focus_string is the focus area for the annotator/docs
+    - absence_errors is a list of absence-based error messages
+    - coexistence_notes is a list of cross-area diagnostic strings
+
+    Rules:
+    1. If any area has errors, pick the highest-scoring error area.
+    2. Among error-free results, prefer audio areas over background.
+    3. When multiple audio areas are active, use the combined "Audio"
+       focus so all relevant annotators and docs are loaded.
+    4. When advertising is heavy alongside an audio session, add a
+       coexistence note so the LLM can reason about interference.
+    """
+    if not results:
+        return "General (full analysis)", [], []
+
+    by_name = {d.area.name: d for d in results}
+    coexistence = []
+
+    # 1. Prefer areas with errors (existing behavior)
+    error_areas = [d for d in results if d.has_errors]
+    if error_areas:
+        top = error_areas[0]
+        # Still check for advertising coexistence
+        _check_adv_coexistence(by_name, top, coexistence)
+        return top.area.focus, top.absence_errors, coexistence
+
+    # 2. Collect active audio areas
+    audio_detected = [d for d in results if d.area.name in _AUDIO_AREAS]
+
+    if not audio_detected:
+        # No audio areas — use highest score (existing behavior)
+        top = results[0]
+        return top.area.focus, top.absence_errors, coexistence
+
+    # 3. Single vs. multiple audio areas
+    if len(audio_detected) == 1:
+        top = audio_detected[0]
+    else:
+        # Multiple audio areas active — pick the dominant one, or use
+        # combined "Audio" focus when the top two are close in score
+        audio_detected.sort(key=lambda d: d.score, reverse=True)
+        top = audio_detected[0]
+        second = audio_detected[1]
+        # If the second audio area has >= 30% of the top's score,
+        # use the combined "Audio" focus
+        if second.score >= top.score * 0.3:
+            _check_adv_coexistence(by_name, audio_detected, coexistence)
+            # Merge absence errors from all audio areas
+            absence = []
+            for d in audio_detected:
+                absence.extend(d.absence_errors)
+            return "Audio", absence, coexistence
+
+    _check_adv_coexistence(by_name, top, coexistence)
+    return top.area.focus, top.absence_errors, coexistence
+
+
+def _check_adv_coexistence(by_name, primary, coexistence):
+    """Add a coexistence note if advertising is heavy during an audio session.
+
+    ``primary`` can be a single DetectedArea or a list of DetectedAreas
+    (for combined Audio focus).  The note mentions all active audio
+    areas so the LLM knows the full picture.
+    """
+    adv = by_name.get("advertising")
+    if not adv or adv.activity_count < _ADV_COEXISTENCE_THRESHOLD:
+        return
+
+    # Collect audio area names from primary (single or list)
+    if isinstance(primary, list):
+        audio_names = [d.area.focus for d in primary
+                       if d.area.name in _AUDIO_AREAS]
+    elif primary.area.name in _AUDIO_AREAS:
+        audio_names = [primary.area.focus]
+    else:
+        return
+
+    if not audio_names:
+        return
+
+    session_desc = " + ".join(audio_names)
+    coexistence.append(
+        f"HIGH ADVERTISING: {adv.activity_count} advertising "
+        f"events detected alongside {session_desc} session. "
+        f"Active scanning may cause controller scheduling "
+        f"conflicts with audio data delivery — check for "
+        f"latency spikes or audio gaps.")
+
+
+# ---------------------------------------------------------------------------
 # Log clipping
 # ---------------------------------------------------------------------------
 
