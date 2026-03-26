@@ -115,13 +115,19 @@ AREAS = [
         name="le_audio",
         focus="Audio / LE Audio",
         activity=[
-            # Unicast (CIS) patterns
+            # Unicast (CIS) patterns -- decoded GATT names
             r"ASE Control Point",
             r"ASE ID:",
             r"Set CIG Parameters",
             r"Create CIS",
             r"CIS Established",
             r"Setup ISO Data Path",
+            # Unicast (CIS) patterns -- raw HCI event names
+            # (present even without GATT discovery)
+            r"Connected Isochronous Stream",
+            r"Setup Isochrono",
+            r"Isochronous Data Path",
+            r"LE-CIS:",
             # Broadcast (BIG) patterns
             r"Basic Audio Announcement",
             r"Create BIG",
@@ -139,6 +145,7 @@ AREAS = [
         ],
         errors=[
             r"CIS Established.*Status:(?!.*Success)",
+            r"Isochronous Stream Established.*Status:(?!.*Success)",
             r"BIG Sync Established.*Status:(?!.*Success)",
             r"BIG Sync Lost",
             r"BIG Terminate",
