@@ -345,6 +345,8 @@ class LEAudioAnnotator(Annotator):
         # Candidate notifications: (pkt, handle, data_bytes)
         self._notify_candidates = []
         self._ase_confirmed = False
+        # Per-ASE stream tracking: ase_id -> {codec, config, state, direction}
+        self._ase_streams = {}
 
     @staticmethod
     def _extract_att_data(body_lines):
@@ -545,15 +547,16 @@ class LEAudioAnnotator(Annotator):
             tl_names = {1: "Low Latency", 2: "Balanced",
                         3: "High Reliability"}
             tl_name = tl_names.get(target_latency,
-                                   f"0x{target_latency:02x}")
+                                    f"0x{target_latency:02x}")
             coding_format = data[5]
             codec_names = {0x06: "LC3", 0x03: "Transparent",
                            0xFF: "Vendor Specific"}
             codec_name = codec_names.get(coding_format,
-                                         f"0x{coding_format:02x}")
+                                          f"0x{coding_format:02x}")
             details += f", Codec={codec_name}, Latency={tl_name}"
             # Parse CC LTV bytes (start at data[11] after cc_length)
             cc = self._parse_cc_ltv(data, 11)
+            cfg_parts = []
             if cc:
                 cc_parts = []
                 freq_idx = cc.get("sampling_freq")
@@ -565,12 +568,19 @@ class LEAudioAnnotator(Annotator):
                 if dur_idx is not None:
                     cc_parts.append(
                         self._FRAME_DURATION.get(dur_idx,
-                                                 f"0x{dur_idx:02x}"))
+                                                  f"0x{dur_idx:02x}"))
                 octets = cc.get("octets_per_frame")
                 if octets is not None:
                     cc_parts.append(f"{octets}oct")
                 if cc_parts:
                     details += f" ({', '.join(cc_parts)})"
+                    cfg_parts = list(cc_parts)
+            # Track per-ASE stream info
+            if ase_id != "?":
+                stream = self._ase_streams.setdefault(ase_id, {})
+                stream["codec"] = codec_name
+                if cfg_parts:
+                    stream["config"] = ", ".join(cfg_parts)
         elif opcode == 0x02 and len(data) >= 5:
             # Config QoS: decode CIG/CIS IDs
             cig_id = data[3]
@@ -613,6 +623,10 @@ class LEAudioAnnotator(Annotator):
                 f"0x{state_val:02x}" if state_val is not None else "?")
             self._tag(pkt, ["ASCS", "ASE_STATE"],
                       annotation=f"ASE ID={ase_id} state: {state_name}")
+            # Track per-ASE state
+            if ase_id != "?":
+                stream = self._ase_streams.setdefault(ase_id, {})
+                stream["state"] = state_name
 
     def annotate_packet(self, pkt):
         s = pkt.summary
@@ -681,22 +695,39 @@ class LEAudioAnnotator(Annotator):
         elif "ASE Control Point" in full:
             # Determine the ASE operation from body
             op = "write"
+            codec_name = None
             for kw in ("Config Codec", "Config QoS", "Enable",
                        "Disable", "Release", "Receiver Start",
                        "Receiver Stop"):
                 if kw in body_text:
                     op = kw
                     break
+            # Extract ASE ID if present
+            ase_m = re.search(r"ASE ID:\s*(\d+)", body_text)
+            ase_id = int(ase_m.group(1)) if ase_m else None
             self._tag(pkt, ["ASCS", "ASE_CP"],
                       annotation=f"ASE Control Point: {op}")
             self.saw_ase_control = True
+            # Track per-ASE info from decoded btmon
+            if ase_id is not None and op == "Config Codec":
+                stream = self._ase_streams.setdefault(ase_id, {})
+                codec_m = re.search(
+                    r"Codec:\s*(.+?)(?:\s*\(|$)", body_text)
+                if codec_m:
+                    stream["codec"] = codec_m.group(1).strip()
 
         elif re.search(r"ASE ID:", body_text):
             # ASE state notification
             state_m = re.search(r"State:\s*(.+)", body_text)
             state = state_m.group(1).strip() if state_m else "?"
+            ase_m = re.search(r"ASE ID:\s*(\d+)", body_text)
             self._tag(pkt, ["ASCS", "ASE_STATE"],
                       annotation=f"ASE state: {state}")
+            # Track per-ASE state from decoded btmon
+            if ase_m:
+                ase_id = int(ase_m.group(1))
+                stream = self._ase_streams.setdefault(ase_id, {})
+                stream["state"] = state
 
         # --- Raw ATT fallback for ASE operations ---
         # When GATT discovery is absent, btmon cannot decode LE Audio
@@ -823,6 +854,18 @@ class LEAudioAnnotator(Annotator):
             diags.append(
                 "ABSENCE: ISO data path set up but no ISO data "
                 "packets observed.")
+
+        # Audio Streams table: STREAM lines for common template
+        for ase_id, info in sorted(self._ase_streams.items()):
+            codec = info.get("codec", "?")
+            state = info.get("state", "?")
+            config = info.get("config", "N/A")
+            # Direction not available from raw ATT decoding; mark as
+            # unknown so the LLM can infer from context if possible.
+            direction = info.get("direction", "?")
+            diags.append(
+                f"STREAM: id={ase_id} dir={direction} codec={codec} "
+                f"state={state} config={config}")
 
         # Summary annotation for ISO data (explicitly normal -- prevents
         # the LLM from flagging normal streaming volume as a problem).
@@ -1445,6 +1488,33 @@ class A2DPAnnotator(Annotator):
             summary = self._format_config_summary(config)
             diags.append(
                 f"CONFIG: SEID {seid} stream configured: {summary}")
+
+        # Audio Streams table: STREAM lines for common template
+        for seid, config in self._stream_config.items():
+            sep = self._discovered_seps.get(seid, {})
+            direction = sep.get("sep_type", "?")
+            codec = self._clean_codec_name(config.get("codec", "?"))
+            state = self._seid_state.get(seid, "idle")
+            cfg_parts = []
+            freq = config.get("frequency")
+            if freq:
+                cleaned = self._clean_frequency(freq)
+                if cleaned:
+                    cfg_parts.append(cleaned)
+            ch = config.get("channel_mode")
+            if ch:
+                cfg_parts.append(ch.split("(")[0].strip())
+            bp_min = config.get("bitpool_min")
+            bp_max = config.get("bitpool_max")
+            if bp_min is not None and bp_max is not None:
+                cfg_parts.append(f"Bitpool {bp_min}-{bp_max}")
+            bitrate = config.get("bitrate")
+            if bitrate:
+                cfg_parts.append(bitrate)
+            cfg_str = ", ".join(cfg_parts) if cfg_parts else "N/A"
+            diags.append(
+                f"STREAM: id={seid} dir={direction} codec={codec} "
+                f"state={state} config={cfg_str}")
 
         # AVDTP state transition table per SEID
         for seid, transitions in self._seid_transitions.items():

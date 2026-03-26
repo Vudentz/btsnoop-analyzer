@@ -37,6 +37,19 @@ _FOOTER = """\
 """
 
 # ---------------------------------------------------------------------------
+# Common Audio Streams section -- shared by all audio-area templates.
+# The diagnostics include STREAM: lines that the LLM uses to fill this.
+# ---------------------------------------------------------------------------
+
+_AUDIO_STREAMS = """
+### Audio Streams
+
+| ID | Direction | Codec | State | Configuration |
+|----|-----------|-------|-------|---------------|
+{stream_rows}
+"""
+
+# ---------------------------------------------------------------------------
 # General (no area-specific template)
 # ---------------------------------------------------------------------------
 
@@ -69,31 +82,12 @@ A2DP = _HEADER + """
 | # | Timestamp | Event | Details |
 |---|-----------|-------|---------|
 {timeline_rows}
-
+""" + _AUDIO_STREAMS + """
 ### AVDTP Signaling Sequence
 
 | Step | Command / Response | SEID | Status | Notes |
 |------|--------------------|------|--------|-------|
 {avdtp_rows}
-
-### Codec Negotiation
-
-| Field | Value |
-|-------|-------|
-| **Codec** | {codec_name} |
-| **Sampling frequency** | {sampling_freq} |
-| **Channel mode** | {channel_mode} |
-| **Bitpool / Bit rate** | {bitpool} |
-| **Result** | {codec_result} |
-
-### Stream State
-
-| Field | Value |
-|-------|-------|
-| **Signaling channel** | L2CAP CID {sig_cid} on PSM 25 |
-| **Media transport channel** | L2CAP CID {media_cid} on PSM 25 |
-| **Stream started** | {stream_started} |
-| **AVRCP active** | {avrcp_active} |
 
 ### Issues Found
 
@@ -165,23 +159,7 @@ LE_AUDIO = _HEADER + """
 | # | Timestamp | Event | Details |
 |---|-----------|-------|---------|
 {timeline_rows}
-
-### ASE State Machine
-
-| ASE ID | Direction | Codec | Transition | Status | Notes |
-|--------|-----------|-------|------------|--------|-------|
-{ase_rows}
-
-### Codec Configuration
-
-| Field | Value |
-|-------|-------|
-| **Codec** | {codec_name} |
-| **Sampling frequency** | {sampling_freq} |
-| **Frame duration** | {frame_duration} |
-| **Octets per frame** | {octets_per_frame} |
-| **Audio channels** | {audio_channels} |
-
+""" + _AUDIO_STREAMS + """
 ### CIS/BIG Setup
 
 | Field | Value |
@@ -191,6 +169,28 @@ LE_AUDIO = _HEADER + """
 | **CIS/BIS handle(s)** | {stream_handles} |
 | **ISO data path** | {iso_data_path} |
 | **Status** | {cis_big_status} |
+
+### Issues Found
+
+{issues}
+
+""" + _FOOTER
+
+# ---------------------------------------------------------------------------
+# Combined Audio (A2DP + LE Audio together)
+# ---------------------------------------------------------------------------
+
+AUDIO = _HEADER + """
+
+### Connection Timeline
+
+| # | Timestamp | Event | Details |
+|---|-----------|-------|---------|
+{timeline_rows}
+""" + _AUDIO_STREAMS + """
+### Protocol Analysis
+
+{protocol_analysis}
 
 ### Issues Found
 
@@ -407,7 +407,7 @@ TEMPLATES = {
     "Audio / A2DP":             A2DP,
     "Audio / HFP":              HFP,
     "Audio / LE Audio":         LE_AUDIO,
-    "Audio":                    GENERAL,   # parent audio uses general layout
+    "Audio":                    AUDIO,
     "Connection issues":        CONNECTIONS,
     "Controller enumeration":   HCI_INIT,
     "Pairing / Security":       SMP,
@@ -474,7 +474,12 @@ these rules strictly:
 7. **Recommendations** must be a numbered list.  Each item must be a
    concrete, actionable step (not generic advice).  If there are no
    recommendations, write: `No recommendations.`
-8. Do NOT add any text outside the template structure.  No preamble,
+8. **Audio Streams table** — fill one row per stream endpoint from the
+   `STREAM:` diagnostics.  The ID column is the SEID (A2DP) or ASE ID
+   (LE Audio).  Direction is Sink/Source.  State is the last known
+   protocol state.  Configuration includes codec parameters (frequency,
+   channel mode, bitpool, frame duration, octets per frame, etc.).
+9. Do NOT add any text outside the template structure.  No preamble,
    no closing remarks, no apologies.
 
 <output-template>

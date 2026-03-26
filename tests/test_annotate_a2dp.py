@@ -216,3 +216,17 @@ class TestA2DPAnnotation:
         for p in caps:
             assert "(," not in p.annotation, \
                 f"Stray comma in: {p.annotation}"
+
+    # --- Audio Streams diagnostic ---
+
+    def test_stream_diagnostic(self, a2dp_text):
+        """Diagnostics should include STREAM line for configured SEIDs."""
+        _, diags, _ = self._annotate(a2dp_text)
+        streams = [d for d in diags if d.startswith("STREAM:")]
+        assert len(streams) >= 1
+        s = streams[0]
+        assert "id=1" in s
+        assert "dir=SNK" in s
+        assert "codec=SBC" in s
+        assert "state=streaming" in s
+        assert "44100Hz" in s

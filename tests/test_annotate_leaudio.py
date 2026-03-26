@@ -127,6 +127,16 @@ class TestLEAudioCISAnnotation:
         assert any("ISO" in d or "CIS" in d for d in diags), \
             f"Expected ISO data diagnostic, got: {diags}"
 
+    def test_stream_diagnostic(self, le_audio_cis_text):
+        """Diagnostics should include STREAM line for configured ASEs."""
+        _, diags, _ = self._annotate(le_audio_cis_text)
+        streams = [d for d in diags if d.startswith("STREAM:")]
+        assert len(streams) >= 1
+        s = streams[0]
+        assert "id=1" in s
+        assert "codec=LC3" in s
+        assert "48kHz" in s
+
 
 class TestBroadcastAnnotation:
     """Broadcast receiver trace annotation correctness."""
