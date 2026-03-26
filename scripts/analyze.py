@@ -3,18 +3,37 @@
 analyze.py - btsnoop trace analyzer
 
 Downloads a btsnoop trace from a GitHub issue, decodes it with btmon,
-optionally anonymizes the output, and sends it to an LLM for analysis
-using the btmon documentation as a knowledge base.
+optionally anonymizes the output, and runs a 5-step analysis pipeline:
 
-Usage:
+  Step 1: Detection    - Auto-detect protocol focus area (detect.py)
+  Step 2: Filter       - Prefilter stats and budget usage (annotate.py)
+  Step 3: Annotation   - Key Frames table (annotate.py)
+  Step 4: Diagnostics  - Graceful disconnects + annotator diagnostics (annotate.py)
+  Step 5: LLM Analysis - Structured diagnostic report (templates.py + LLM)
+
+Each step writes a markdown file to --output-dir (detect.md, filter.md,
+annotate.md, diagnose.md, analyze.md) for posting as GitHub comments.
+
+Usage (full pipeline with output directory):
     python3 scripts/analyze.py \
         --trace-url URL \
         --description "user description" \
         --focus "General" \
         --anonymize \
+        --provider github \
+        --btmon-path ./bluez/monitor/btmon \
+        --docs-path ./bluez/doc/btmon.rst \
+        --output-dir results
+
+Usage (single output file, no per-step files):
+    python3 scripts/analyze.py \
+        --trace-url URL \
+        --description "user description" \
+        --focus "Audio / A2DP" \
         --provider openai \
         --btmon-path ./bluez/monitor/btmon \
-        --docs-path ./bluez/doc/btmon.rst
+        --docs-path ./bluez/doc/btmon.rst \
+        --output analysis.md
 
 Environment variables:
     OPENAI_API_KEY      - for --provider openai

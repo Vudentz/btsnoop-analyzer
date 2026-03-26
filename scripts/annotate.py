@@ -12,11 +12,20 @@ focus-specific annotators that:
 Each annotator understands the protocol flow for its area and can
 detect absence-based issues (expected events that never appeared).
 
-Usage as a module:
-    from annotate import prefilter
+Pipeline steps produced by this module:
+  Step 2 (Filter):      format_filter_markdown()
+  Step 3 (Annotation):  format_annotation_markdown()
+  Step 4 (Diagnostics): format_diagnostics_markdown()
 
-Usage standalone (for debugging):
+Usage as a module:
+    from annotate import annotate_trace, prefilter
+    from annotate import format_annotation_markdown
+    from annotate import format_diagnostics_markdown
+    from annotate import format_filter_markdown
+
+Usage standalone (prefilter + diagnostics to stderr):
     python3 scripts/annotate.py --focus "Audio / LE Audio" < decoded.txt
+    python3 scripts/annotate.py --focus "Audio / A2DP" --max-chars 16000 < decoded.txt
 """
 
 import re

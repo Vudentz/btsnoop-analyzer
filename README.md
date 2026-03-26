@@ -14,9 +14,15 @@ comment.
      builds `btmon`
    - Decodes the trace with `btmon -r`
    - Optionally anonymizes MAC addresses and device names
-   - Sends the decoded output + [btmon documentation](https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/btmon.rst)
-     to an LLM for analysis
-   - Posts the analysis report as a comment on your issue
+   - Runs a 5-step analysis pipeline and posts each step as a comment:
+
+| Step | Comment | Description |
+|------|---------|-------------|
+| 1 | **Detection** | Auto-detect protocol area (A2DP, LE Audio, HFP, etc.) |
+| 2 | **Filter** | Prefilter stats: packet counts, time span, budget usage |
+| 3 | **Annotation** | Key Frames table: signaling packets with tags and descriptions |
+| 4 | **Diagnostics** | Graceful disconnects, stream summaries, state tables, absence warnings |
+| 5 | **LLM Analysis** | Structured diagnostic report from the LLM |
 
 ## Setup
 
@@ -73,7 +79,7 @@ You can run the analyzer locally without GitHub Actions:
 git clone --depth 1 https://git.kernel.org/pub/scm/bluetooth/bluez.git
 cd bluez && ./bootstrap-configure && make monitor/btmon && cd ..
 
-# Run analysis
+# Run the full 5-step pipeline
 export OPENAI_API_KEY="sk-..."  # or ANTHROPIC_API_KEY, etc.
 python3 scripts/analyze.py \
   --trace-url https://example.com/trace.log \
@@ -82,16 +88,26 @@ python3 scripts/analyze.py \
   --anonymize \
   --provider openai \
   --btmon-path ./bluez/monitor/btmon \
-  --docs-path ./bluez/doc/btmon.rst
+  --docs-path ./bluez/doc/btmon.rst \
+  --output-dir results
+# Output: results/detect.md, filter.md, annotate.md, diagnose.md, analyze.md
 ```
 
-Or decode a local file directly:
+### Running Individual Steps
+
+You can also run each step independently on a pre-decoded trace:
 
 ```bash
-# Decode the trace
+# Decode the trace first
 ./bluez/monitor/btmon -r /path/to/trace.log > decoded.txt
 
-# Anonymize (optional)
+# Step 1: Detection — identify protocol areas
+python3 scripts/detect.py < decoded.txt
+
+# Steps 2-4: Annotation and prefiltering
+python3 scripts/annotate.py --focus "Audio / A2DP" < decoded.txt
+
+# Anonymize (optional, standalone)
 ./scripts/anonymize.sh < decoded.txt > decoded-anon.txt
 ```
 
@@ -103,13 +119,14 @@ btsnoop-analyzer/
 │   ├── ISSUE_TEMPLATE/
 │   │   └── analyze-trace.yml    # Issue form: trace upload, description, focus
 │   └── workflows/
-│       └── analyze-trace.yml    # CI workflow: build btmon, run analysis, post comment
+│       └── analyze-trace.yml    # CI workflow: build btmon, run 5-step pipeline
 ├── scripts/
-│   ├── analyze.py               # Main entry: download, decode, anonymize, prompt, call LLM
-│   ├── detect.py                # Auto-detection: area scoring, absence checks, log clipping
-│   ├── annotate.py              # Packet parser + 8 focus-specific annotators + prefilter
-│   ├── templates.py             # Structured output templates per focus area
+│   ├── analyze.py               # Main entry: decode, anonymize, orchestrate pipeline
+│   ├── detect.py                # Step 1: area scoring, absence checks, log clipping
+│   ├── annotate.py              # Steps 2-4: packet parser, annotators, prefilter
+│   ├── templates.py             # Step 5: structured output templates per focus area
 │   └── anonymize.sh             # Shell-based MAC anonymization (standalone use)
+├── tests/                       # pytest test suite (87 tests)
 ├── ARCHITECTURE.md              # Pipeline architecture documentation
 └── README.md
 ```
@@ -120,12 +137,17 @@ issue submission to posted diagnostic report — see
 
 ## Analysis Report Format
 
-The LLM produces a structured report using focus-area-specific templates
-(`scripts/templates.py`) that enforce consistent output. Each report includes:
+The pipeline posts 5 separate comments on the issue. The first 4
+(Detection, Filter, Annotation, Diagnostics) are generated
+deterministically from the trace — no LLM involved. The 5th comment
+is the LLM-generated diagnostic report using focus-area-specific
+templates (`scripts/templates.py`) that enforce consistent output:
 
 - **Summary** — Verdict and one-line description
-- **Protocol-Specific Tables** — Codec configuration, state transitions,
-  connection parameters, etc. (varies by focus area)
+- **Audio Streams** — Stream ID, direction, codec, peak state, config
+  (A2DP and LE Audio focus areas)
+- **Protocol-Specific Tables** — State transitions, connection
+  parameters, etc. (varies by focus area)
 - **Event Timeline** — Key events with timestamps and handle values
 - **Issues Found** — Errors, protocol violations, absence-based issues
   (expected events that never occurred)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-detect.py - Auto-detect problem areas and clip btmon logs.
+detect.py - Auto-detect problem areas and clip btmon logs (Step 1).
 
 Scans decoded btmon output for protocol-specific patterns derived from
 the btmon documentation's "Automating Analysis" sections.  Each area
@@ -13,10 +13,12 @@ btmon packet boundaries, producing a compact excerpt that an LLM can
 analyze without hitting context limits.
 
 Usage as a module:
-    from detect import detect, clip
+    from detect import detect, clip_for_focus, select_focus
+    from detect import format_markdown as detect_markdown
 
-Usage standalone (for debugging):
+Usage standalone (prints detected areas with scores):
     python3 scripts/detect.py < decoded_trace.txt
+    btmon -r trace.log | python3 scripts/detect.py
 """
 
 import re
