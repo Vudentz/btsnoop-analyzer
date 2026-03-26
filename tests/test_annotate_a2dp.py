@@ -81,3 +81,138 @@ class TestA2DPAnnotation:
         _, diags, _ = self._annotate(a2dp_text)
         assert any("media" in d.lower() or "A2DP" in d for d in diags), \
             f"Expected media count diagnostic, got: {diags}"
+
+    # --- SEID discovery and correlation ---
+
+    def test_discover_response_shows_seps(self, a2dp_text):
+        """Discover Response should list SEP IDs and types."""
+        packets, _, _ = self._annotate(a2dp_text)
+        disc_resp = [p for p in packets
+                     if "Discover Response" in p.annotation]
+        assert len(disc_resp) == 1
+        ann = disc_resp[0].annotation
+        assert "SEID 1" in ann
+        assert "SEID 2" in ann
+        assert "SNK" in ann
+        # Should NOT contain raw hex like (0x01)
+        assert "(0x01)" not in ann
+
+    def test_seid_correlation_in_commands(self, a2dp_text):
+        """Open/Start/Suspend commands should show correlated SEID."""
+        packets, _, _ = self._annotate(a2dp_text)
+        for op in ("Open", "Start", "Suspend"):
+            cmds = [p for p in packets
+                    if p.annotation.startswith(f"AVDTP {op} SEID")]
+            assert len(cmds) >= 1, \
+                f"Expected {op} command with SEID, got: {cmds}"
+
+    def test_seid_correlation_in_responses(self, a2dp_text):
+        """Response Accept for Open/Start/Suspend should show SEID."""
+        packets, _, _ = self._annotate(a2dp_text)
+        for op in ("Open", "Start", "Suspend"):
+            resps = [p for p in packets
+                     if f"{op} Accept SEID" in p.annotation]
+            assert len(resps) >= 1, \
+                f"Expected {op} Accept with SEID via label correlation"
+
+    # --- Codec configuration ---
+
+    def test_set_config_annotation_has_codec(self, a2dp_text):
+        """Set Configuration should show codec name and params."""
+        packets, _, _ = self._annotate(a2dp_text)
+        sc = [p for p in packets
+              if "Set Configuration" in p.annotation
+              and "Accept" not in p.annotation]
+        assert len(sc) == 1
+        ann = sc[0].annotation
+        assert "SBC" in ann
+        assert "44100Hz" in ann
+        assert "Joint Stereo" in ann
+
+    def test_set_config_accept_has_config_summary(self, a2dp_text):
+        """Set Configuration Accept should reference config via label."""
+        packets, _, _ = self._annotate(a2dp_text)
+        sca = [p for p in packets
+               if "Set Configuration Accept" in p.annotation]
+        assert len(sca) == 1
+        ann = sca[0].annotation
+        # Config correlated from command via label
+        assert "SBC" in ann
+        assert "44100Hz" in ann
+
+    def test_config_diagnostic(self, a2dp_text):
+        """Diagnostics should include CONFIG line with codec params."""
+        _, diags, _ = self._annotate(a2dp_text)
+        config_diags = [d for d in diags if d.startswith("CONFIG:")]
+        assert len(config_diags) >= 1
+        cfg = config_diags[0]
+        assert "SEID 1" in cfg
+        assert "SBC" in cfg
+        assert "44100Hz" in cfg
+        assert "Joint Stereo" in cfg
+        assert "Bitpool 2-52" in cfg
+
+    # --- State machine ---
+
+    def test_state_transition_diagnostic(self, a2dp_text):
+        """Diagnostics should include AVDTP state transition table."""
+        _, diags, _ = self._annotate(a2dp_text)
+        state_diags = [d for d in diags if d.startswith("STATE:")]
+        assert len(state_diags) >= 1
+        table = state_diags[0]
+        assert "idle -> configured" in table
+        assert "configured -> open" in table
+        assert "open -> streaming" in table
+
+    def test_state_suspend_and_restart(self, a2dp_text):
+        """State table should show Suspend (streaming->open) and restart."""
+        _, diags, _ = self._annotate(a2dp_text)
+        state_diags = [d for d in diags if d.startswith("STATE:")]
+        assert len(state_diags) >= 1
+        table = state_diags[0]
+        assert "streaming -> open" in table
+        # After suspend, should restart to streaming
+        lines = table.split("\n")
+        streaming_transitions = [l for l in lines
+                                 if "-> streaming" in l]
+        assert len(streaming_transitions) >= 2, \
+            "Expected at least 2 transitions to streaming (start + restart)"
+
+    def test_streaming_session_count(self, a2dp_text):
+        """Diagnostics should count streaming sessions."""
+        _, diags, _ = self._annotate(a2dp_text)
+        session_diags = [d for d in diags if "streaming session" in d]
+        assert len(session_diags) == 1
+        assert "2 streaming session" in session_diags[0]
+
+    # --- Clean display (no raw hex) ---
+
+    def test_no_hex_in_sep_type(self, a2dp_text):
+        """SEP type should be clean (SNK not SNK (0x01))."""
+        packets, _, _ = self._annotate(a2dp_text)
+        for p in packets:
+            if "Discover Response" in p.annotation:
+                assert "(0x01)" not in p.annotation
+                assert "(0x00)" not in p.annotation
+
+    def test_no_zero_hz_in_annotations(self, a2dp_text):
+        """No standalone '0Hz' should appear from bitmask frequency parsing."""
+        import re
+        packets, diags, _ = self._annotate(a2dp_text)
+        # Match '0Hz' NOT preceded by a digit (rules out 44100Hz etc.)
+        zero_hz_re = re.compile(r"(?<!\d)0Hz")
+        for p in packets:
+            assert not zero_hz_re.search(p.annotation), \
+                f"Found standalone 0Hz in: {p.annotation}"
+        for d in diags:
+            assert not zero_hz_re.search(d), \
+                f"Found standalone 0Hz in diagnostic: {d}"
+
+    def test_capabilities_no_stray_comma(self, a2dp_text):
+        """Get Capabilities should not have stray comma from empty freq."""
+        packets, _, _ = self._annotate(a2dp_text)
+        caps = [p for p in packets
+                if "Get Capabilities Response" in p.annotation]
+        for p in caps:
+            assert "(," not in p.annotation, \
+                f"Stray comma in: {p.annotation}"

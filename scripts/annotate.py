@@ -840,9 +840,32 @@ class LEAudioAnnotator(Annotator):
 # ---------------------------------------------------------------------------
 
 class A2DPAnnotator(Annotator):
-    """Annotator for A2DP / AVDTP traces."""
+    """Annotator for A2DP / AVDTP traces.
+
+    Tracks the AVDTP state machine per SEID, extracts codec
+    configuration from Set Configuration, and records state
+    transitions for diagnostics.
+
+    AVDTP states:
+        Idle → Configured → Open → Streaming
+        Streaming → Open (via Suspend)
+        Any → Idle (via Close or Abort)
+    """
 
     name = "a2dp"
+
+    # AVDTP state machine
+    _AVDTP_STATES = {
+        "idle":       "Idle",
+        "configured": "Configured",
+        "open":       "Open",
+        "streaming":  "Streaming",
+        "closing":    "Closing",
+        "aborting":   "Aborting",
+    }
+
+    # Regex to extract AVDTP label from body lines
+    _LABEL_RE = re.compile(r"label\s+(\d+)")
 
     def __init__(self):
         self.saw_discover = False
@@ -851,6 +874,230 @@ class A2DPAnnotator(Annotator):
         self.saw_start = False
         self.saw_media_data = False
         self.media_data_count = 0
+        # Per-SEID state tracking: seid -> current state string
+        self._seid_state = {}
+        # Per-SEID state transition log: seid -> [(timestamp, old, new, trigger)]
+        self._seid_transitions = defaultdict(list)
+        # Discovered SEPs: seid -> {type, media_type, in_use}
+        self._discovered_seps = {}
+        # Per-SEID capabilities: seid -> [codec_description, ...]
+        self._seid_capabilities = defaultdict(list)
+        # Selected stream config: seid -> {codec, frequency, channel_mode,
+        #                                  bitpool_min, bitpool_max, ...}
+        self._stream_config = {}
+        # Number of streaming sessions (Start Accept count)
+        self._stream_sessions = 0
+        # AVDTP label -> SEID mapping for correlating commands to responses
+        self._label_seid = {}
+        # AVDTP label -> config mapping for Set Configuration commands
+        self._label_config = {}
+
+    def _transition(self, seid, new_state, trigger, timestamp):
+        """Record an AVDTP state transition for a SEID."""
+        old = self._seid_state.get(seid, "idle")
+        self._seid_state[seid] = new_state
+        self._seid_transitions[seid].append(
+            (timestamp, old, new_state, trigger))
+
+    def _extract_label(self, body_lines):
+        """Extract AVDTP transaction label from packet lines."""
+        for line in body_lines:
+            m = self._LABEL_RE.search(line)
+            if m:
+                return int(m.group(1))
+        return None
+
+    def _resolve_seid(self, pkt):
+        """Get SEID from body or from label correlation."""
+        seid = self._parse_seid(pkt.body)
+        if seid is not None:
+            return seid
+        # Fall back to label correlation
+        label = self._extract_label([pkt.summary] + pkt.body)
+        if label is not None:
+            return self._label_seid.get(label)
+        return None
+
+    @staticmethod
+    def _parse_seid(body_lines):
+        """Extract ACP SEID from AVDTP body lines."""
+        for line in body_lines:
+            m = re.search(r"ACP SEID:\s*(\d+)", line)
+            if m:
+                return int(m.group(1))
+        return None
+
+    @staticmethod
+    def _parse_codec_config(body_lines):
+        """Extract codec configuration from Set Configuration body.
+
+        Returns dict with codec details or empty dict.
+        """
+        config = {}
+        codec_name = None
+        for line in body_lines:
+            stripped = line.strip()
+            # Codec name
+            m = re.match(r"Media Codec:\s*(.+)", stripped)
+            if m:
+                codec_name = m.group(1).strip()
+                config["codec"] = codec_name
+                continue
+            # SBC / AAC / vendor parameters
+            m = re.match(r"Frequency:\s*(.+)", stripped)
+            if m:
+                config["frequency"] = m.group(1).strip()
+                continue
+            m = re.match(r"Channel Mode:\s*(.+)", stripped)
+            if m:
+                config["channel_mode"] = m.group(1).strip()
+                continue
+            m = re.match(r"Minimum Bitpool:\s*(\d+)", stripped)
+            if m:
+                config["bitpool_min"] = int(m.group(1))
+                continue
+            m = re.match(r"Maximum Bitpool:\s*(\d+)", stripped)
+            if m:
+                config["bitpool_max"] = int(m.group(1))
+                continue
+            m = re.match(r"Block Length:\s*(.+)", stripped)
+            if m:
+                config["block_length"] = m.group(1).strip()
+                continue
+            m = re.match(r"Subbands:\s*(.+)", stripped)
+            if m:
+                config["subbands"] = m.group(1).strip()
+                continue
+            m = re.match(r"Allocation Method:\s*(.+)", stripped)
+            if m:
+                config["allocation"] = m.group(1).strip()
+                continue
+            m = re.match(r"Object Type:\s*(.+)", stripped)
+            if m:
+                config["object_type"] = m.group(1).strip()
+                continue
+            m = re.match(r"Bitrate:\s*(.+)", stripped)
+            if m:
+                config["bitrate"] = m.group(1).strip()
+                continue
+            m = re.match(r"VBR:\s*(.+)", stripped)
+            if m:
+                config["vbr"] = m.group(1).strip()
+                continue
+            m = re.match(r"Channels:\s*(.+)", stripped)
+            if m:
+                config["channels"] = m.group(1).strip()
+                continue
+            # Vendor codec info
+            m = re.match(r"Vendor ID:\s*(.+)", stripped)
+            if m:
+                config["vendor_id"] = m.group(1).strip()
+                continue
+            m = re.match(r"Vendor Specific Codec ID:\s*(.+)", stripped)
+            if m:
+                config["vendor_codec"] = m.group(1).strip()
+                # Use vendor codec name as codec if Non-A2DP
+                if codec_name and "Non-A2DP" in codec_name:
+                    # e.g. "aptX (0x0001)" -> "aptX"
+                    short = m.group(1).strip().split("(")[0].strip()
+                    config["codec"] = short
+                continue
+        return config
+
+    @staticmethod
+    def _format_config_summary(config):
+        """Build a short human-readable codec config string."""
+        parts = []
+        codec = config.get("codec", "?")
+        parts.append(A2DPAnnotator._clean_codec_name(codec))
+        freq = config.get("frequency")
+        if freq:
+            cleaned_freq = A2DPAnnotator._clean_frequency(freq)
+            if cleaned_freq:
+                parts.append(cleaned_freq)
+        ch = config.get("channel_mode")
+        if ch:
+            ch_short = ch.split("(")[0].strip()
+            parts.append(ch_short)
+        bp_min = config.get("bitpool_min")
+        bp_max = config.get("bitpool_max")
+        if bp_min is not None and bp_max is not None:
+            parts.append(f"Bitpool {bp_min}-{bp_max}")
+        bitrate = config.get("bitrate")
+        if bitrate:
+            parts.append(bitrate)
+        return ", ".join(parts)
+
+    @staticmethod
+    def _clean_codec_name(name):
+        """Strip hex code suffix from codec name.
+
+        'SBC (0x00)' -> 'SBC', 'MPEG-2,4 AAC (0x02)' -> 'AAC'
+        """
+        if not name:
+            return "?"
+        # Remove trailing (0xNN)
+        cleaned = re.sub(r"\s*\(0x[0-9a-fA-F]+\)\s*$", "", name)
+        # Simplify MPEG-2,4 AAC -> AAC
+        if "AAC" in cleaned:
+            return "AAC"
+        return cleaned
+
+    @staticmethod
+    def _clean_frequency(freq_str):
+        """Clean frequency string for display.
+
+        '44100 (0x20)' -> '44100Hz'
+        '0x30' -> '' (bitmask in capabilities, skip)
+        """
+        if not freq_str:
+            return ""
+        # Skip pure hex bitmasks from capabilities (e.g. '0x30', '0x180')
+        stripped = freq_str.strip()
+        if re.match(r"^0x[0-9a-fA-F]+$", stripped):
+            return ""
+        # Extract decoded frequency (e.g. '44100' from '44100 (0x20)')
+        m = re.match(r"(\d+)", stripped)
+        if m and int(m.group(1)) > 0:
+            return f"{m.group(1)}Hz"
+        return ""
+
+    @staticmethod
+    def _parse_discover_response(body_lines):
+        """Extract SEP info from Discover Response body.
+
+        Returns list of dicts: [{seid, media_type, sep_type, in_use}]
+        """
+        seps = []
+        current = {}
+        for line in body_lines:
+            stripped = line.strip()
+            m = re.match(r"ACP SEID:\s*(\d+)", stripped)
+            if m:
+                if current:
+                    seps.append(current)
+                current = {"seid": int(m.group(1))}
+                continue
+            m = re.match(r"Media Type:\s*(.+)", stripped)
+            if m and current:
+                raw = m.group(1).strip()
+                current["media_type"] = re.sub(
+                    r"\s*\(0x[0-9a-fA-F]+\)\s*$", "", raw)
+                continue
+            m = re.match(r"SEP Type:\s*(.+)", stripped)
+            if m and current:
+                raw = m.group(1).strip()
+                # Strip hex suffix: 'SNK (0x01)' -> 'SNK'
+                current["sep_type"] = re.sub(
+                    r"\s*\(0x[0-9a-fA-F]+\)\s*$", "", raw)
+                continue
+            m = re.match(r"In use:\s*(.+)", stripped)
+            if m and current:
+                current["in_use"] = m.group(1).strip()
+                continue
+        if current:
+            seps.append(current)
+        return seps
 
     def annotate_packet(self, pkt):
         s = pkt.summary
@@ -858,67 +1105,10 @@ class A2DPAnnotator(Annotator):
         full = s + "\n" + body_text
 
         if "AVDTP:" in full:
-            # Parse AVDTP signaling
-            for line in [s] + pkt.body:
-                if "Discover" in line and "Response" not in line:
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Discover")
-                    self.saw_discover = True
-                    return
-                elif "Discover" in line and "Response" in line:
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Discover Response")
-                    return
-                elif "Get All Capabilities" in line or \
-                        "Get Capabilities" in line:
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Get Capabilities")
-                    return
-                elif "Set Configuration" in line:
-                    accept = "Accept" in line
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Set Configuration"
-                              + (" Accept" if accept else ""))
-                    self.saw_set_config = True
-                    return
-                elif "Open" in line and "AVDTP" in line:
-                    accept = "Accept" in line
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Open"
-                              + (" Accept" if accept else ""))
-                    self.saw_open = True
-                    return
-                elif "Start" in line and "AVDTP" in line:
-                    accept = "Accept" in line
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Start"
-                              + (" Accept" if accept else ""))
-                    self.saw_start = True
-                    return
-                elif "Suspend" in line and "AVDTP" in line:
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Suspend")
-                    return
-                elif "Close" in line and "AVDTP" in line:
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Close")
-                    return
-                elif "Abort" in line and "AVDTP" in line:
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP Abort -- ERROR")
-                    return
-                elif "Response Reject" in line:
-                    self._tag(pkt, "AVDTP",
-                              annotation="AVDTP REJECTED")
-                    return
+            self._annotate_avdtp(pkt, body_text, full)
+            return
 
-        if "Media Codec:" in body_text:
-            codec_m = re.search(r"Media Codec:\s*(.+)", body_text)
-            codec = codec_m.group(1).strip() if codec_m else "?"
-            self._tag(pkt, ["A2DP", "AVDTP"],
-                      annotation=f"Codec: {codec}")
-
-        elif "PSM: 25" in body_text:
+        if "PSM: 25" in body_text and not pkt.tags:
             self._tag(pkt, ["L2CAP", "AVDTP"],
                       annotation="L2CAP for AVDTP (PSM 25)")
 
@@ -926,8 +1116,6 @@ class A2DPAnnotator(Annotator):
         elif pkt.direction in ("<", ">") and \
                 "ACL:" in pkt._raw_header and \
                 not pkt.tags:
-            # Check if this looks like A2DP media data (large ACL on
-            # the media transport channel) -- heuristic: large dlen
             dlen_m = re.search(r'dlen\s+(\d+)', pkt._raw_header)
             if dlen_m and int(dlen_m.group(1)) > 200:
                 self.media_data_count += 1
@@ -951,8 +1139,6 @@ class A2DPAnnotator(Annotator):
         # Number of Completed Packets -- only flag anomalous latency
         elif "Number of Completed Packets" in full and not pkt.tags:
             if "Latency:" in body_text:
-                # Extract the max latency value (e.g. "56 msec" from
-                # "Latency: 56 msec (1-56 msec ~38 msec)")
                 lat_m = re.search(r"Latency:\s*(\d+)\s*msec", body_text)
                 if lat_m:
                     max_lat = int(lat_m.group(1))
@@ -963,6 +1149,281 @@ class A2DPAnnotator(Annotator):
                             if lat_full else f"{max_lat} msec"
                         self._tag(pkt, ["A2DP", "HCI"],
                                   annotation=f"High latency: {lat_str}")
+
+    def _annotate_avdtp(self, pkt, body_text, full):
+        """Annotate AVDTP signaling with state machine tracking."""
+        seid = self._parse_seid(pkt.body)
+        label = self._extract_label([pkt.summary] + pkt.body)
+        ts = pkt.timestamp
+
+        # On Commands, store label→SEID mapping
+        is_command = "Command" in full and "Response" not in full
+        is_response = "Response Accept" in full
+        is_reject = "Response Reject" in full
+
+        if is_command and label is not None and seid is not None:
+            self._label_seid[label] = seid
+
+        # Resolve SEID for responses via label correlation
+        if (is_response or is_reject) and seid is None and \
+                label is not None:
+            seid = self._label_seid.get(label)
+
+        # Determine the AVDTP signal type from body lines
+        for line in [pkt.summary] + pkt.body:
+            # --- Discover ---
+            if "Discover" in line and "AVDTP" in line:
+                if is_response:
+                    seps = self._parse_discover_response(pkt.body)
+                    for sep in seps:
+                        sid = sep.get("seid")
+                        if sid is not None:
+                            self._discovered_seps[sid] = sep
+                            if sid not in self._seid_state:
+                                self._seid_state[sid] = "idle"
+                    sep_descs = []
+                    for sep in seps:
+                        sid = sep.get("seid", "?")
+                        stype = sep.get("sep_type", "?")
+                        in_use = sep.get("in_use", "?")
+                        sep_descs.append(
+                            f"SEID {sid} ({stype}"
+                            + (", In use" if in_use == "Yes" else "")
+                            + ")")
+                    ann = "AVDTP Discover Response: " + ", ".join(
+                        sep_descs) if sep_descs else \
+                        "AVDTP Discover Response"
+                    self._tag(pkt, "AVDTP", annotation=ann)
+                    return
+                elif is_reject:
+                    self._tag(pkt, "AVDTP",
+                              annotation="AVDTP Discover REJECTED")
+                    return
+                elif is_command:
+                    self._tag(pkt, "AVDTP",
+                              annotation="AVDTP Discover")
+                    self.saw_discover = True
+                    return
+
+            # --- Get Capabilities ---
+            if ("Get All Capabilities" in line or
+                    "Get Capabilities" in line) and "AVDTP" in line:
+                if is_response:
+                    config = self._parse_codec_config(pkt.body)
+                    codec = self._clean_codec_name(
+                        config.get("codec", "?"))
+                    if seid is not None:
+                        self._seid_capabilities[seid].append(config)
+                    ann = (f"AVDTP Get Capabilities Response "
+                           f"SEID {seid}: {codec}")
+                    # Add key params for richer annotation
+                    caps_parts = []
+                    freq = config.get("frequency")
+                    if freq:
+                        cleaned_freq = self._clean_frequency(freq)
+                        if cleaned_freq:
+                            caps_parts.append(cleaned_freq)
+                    bp_max = config.get("bitpool_max")
+                    if bp_max:
+                        caps_parts.append(f"MaxBitpool={bp_max}")
+                    bitrate = config.get("bitrate")
+                    if bitrate:
+                        caps_parts.append(bitrate)
+                    if caps_parts:
+                        ann += f" ({', '.join(caps_parts)})"
+                    self._tag(pkt, "AVDTP", annotation=ann)
+                    return
+                elif is_command:
+                    ann = f"AVDTP Get Capabilities SEID {seid}" \
+                        if seid else "AVDTP Get Capabilities"
+                    self._tag(pkt, "AVDTP", annotation=ann)
+                    return
+
+            # --- Set Configuration ---
+            if "Set Configuration" in line and "AVDTP" in line:
+                if is_response:
+                    if seid is not None:
+                        self._transition(seid, "configured",
+                                         "Set Configuration Accept", ts)
+                    # Retrieve config from command
+                    config = (self._label_config.get(label)
+                              if label is not None else None)
+                    if seid is not None and config:
+                        self._stream_config[seid] = config
+                    summary = self._format_config_summary(config) \
+                        if config else ""
+                    ann = f"AVDTP Set Configuration Accept SEID {seid}"
+                    if summary:
+                        ann += f": {summary}"
+                    self._tag(pkt, "AVDTP", annotation=ann)
+                    self.saw_set_config = True
+                    return
+                elif is_reject:
+                    err_m = re.search(r"Error code:\s*(.+)", body_text)
+                    err = err_m.group(1).strip() if err_m else "?"
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Set Configuration "
+                              f"REJECTED: {err}")
+                    return
+                elif is_command:
+                    config = self._parse_codec_config(pkt.body)
+                    if label is not None and config:
+                        self._label_config[label] = config
+                    summary = self._format_config_summary(config) \
+                        if config else ""
+                    int_seid_m = re.search(r"INT SEID:\s*(\d+)",
+                                           body_text)
+                    int_seid = int_seid_m.group(1) if int_seid_m \
+                        else "?"
+                    ann = (f"AVDTP Set Configuration "
+                           f"ACP SEID {seid}, INT SEID {int_seid}")
+                    if summary:
+                        ann += f": {summary}"
+                    self._tag(pkt, ["AVDTP", "A2DP"], annotation=ann)
+                    self.saw_set_config = True
+                    return
+
+            # --- Reconfigure ---
+            if "Reconfigure" in line and "AVDTP" in line:
+                if is_response:
+                    config = self._parse_codec_config(pkt.body)
+                    if seid is not None and config:
+                        self._stream_config[seid] = config
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Reconfigure Accept "
+                              f"SEID {seid}")
+                    return
+                elif is_command:
+                    config = self._parse_codec_config(pkt.body)
+                    if seid is not None and config:
+                        self._stream_config[seid] = config
+                    summary = self._format_config_summary(config) \
+                        if config else ""
+                    ann = f"AVDTP Reconfigure SEID {seid}"
+                    if summary:
+                        ann += f": {summary}"
+                    self._tag(pkt, ["AVDTP", "A2DP"], annotation=ann)
+                    return
+
+            # --- Open ---
+            if "Open" in line and "AVDTP" in line:
+                if is_response:
+                    if seid is not None:
+                        self._transition(seid, "open",
+                                         "Open Accept", ts)
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Open Accept "
+                              f"SEID {seid}")
+                    self.saw_open = True
+                    return
+                elif is_reject:
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Open REJECTED "
+                              f"SEID {seid}")
+                    return
+                elif is_command:
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Open SEID {seid}")
+                    self.saw_open = True
+                    return
+
+            # --- Start ---
+            if "Start" in line and "AVDTP" in line:
+                if is_response:
+                    if seid is not None:
+                        self._transition(seid, "streaming",
+                                         "Start Accept", ts)
+                    self._stream_sessions += 1
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Start Accept "
+                              f"SEID {seid}")
+                    self.saw_start = True
+                    return
+                elif is_reject:
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Start REJECTED "
+                              f"SEID {seid}")
+                    return
+                elif is_command:
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Start SEID {seid}")
+                    self.saw_start = True
+                    return
+
+            # --- Suspend ---
+            if "Suspend" in line and "AVDTP" in line:
+                if is_response:
+                    if seid is not None:
+                        self._transition(seid, "open",
+                                         "Suspend Accept", ts)
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Suspend Accept "
+                              f"SEID {seid}")
+                    return
+                elif is_command:
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Suspend SEID {seid}")
+                    return
+
+            # --- Close ---
+            if "Close" in line and "AVDTP" in line:
+                if "Response Accept" in line:
+                    if seid is not None:
+                        self._transition(seid, "idle",
+                                         "Close Accept", ts)
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Close Accept "
+                              f"SEID {seid}")
+                    return
+                elif "Command" in line:
+                    if seid is not None:
+                        self._transition(seid, "closing",
+                                         "Close Command", ts)
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Close SEID {seid}")
+                    return
+
+            # --- Abort ---
+            if "Abort" in line and "AVDTP" in line:
+                if "Response Accept" in line:
+                    if seid is not None:
+                        self._transition(seid, "idle",
+                                         "Abort Accept", ts)
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Abort Accept "
+                              f"SEID {seid}")
+                    return
+                elif "Command" in line:
+                    if seid is not None:
+                        self._transition(seid, "aborting",
+                                         "Abort Command", ts)
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Abort SEID {seid}"
+                              f" -- ERROR")
+                    return
+
+            # --- Delay Report ---
+            if "Delay Report" in line and "AVDTP" in line:
+                delay_m = re.search(r"Delay:\s*(.+)", body_text)
+                delay_str = delay_m.group(1).strip() \
+                    if delay_m else "?"
+                if "Response" in line:
+                    self._tag(pkt, "AVDTP",
+                              annotation="AVDTP Delay Report Accept")
+                    return
+                else:
+                    self._tag(pkt, "AVDTP",
+                              annotation=f"AVDTP Delay Report: "
+                              f"{delay_str}")
+                    return
+
+            # --- Generic reject ---
+            if "Response Reject" in line:
+                err_m = re.search(r"Error code:\s*(.+)", body_text)
+                err = err_m.group(1).strip() if err_m else "?"
+                self._tag(pkt, "AVDTP",
+                          annotation=f"AVDTP REJECTED: {err}")
+                return
 
     def finalize(self, packets):
         diags = []
@@ -978,6 +1439,31 @@ class A2DPAnnotator(Annotator):
             diags.append(
                 "ABSENCE: AVDTP Open completed but Start "
                 "never sent.")
+
+        # Stream configuration summary
+        for seid, config in self._stream_config.items():
+            summary = self._format_config_summary(config)
+            diags.append(
+                f"CONFIG: SEID {seid} stream configured: {summary}")
+
+        # AVDTP state transition table per SEID
+        for seid, transitions in self._seid_transitions.items():
+            if not transitions:
+                continue
+            table_lines = [
+                f"STATE: SEID {seid} AVDTP state transitions:"]
+            for ts, old, new, trigger in transitions:
+                table_lines.append(
+                    f"  {ts:>12.3f}s  {old:>12s} -> {new:<12s}  "
+                    f"({trigger})")
+            diags.append("\n".join(table_lines))
+
+        # Streaming session count
+        if self._stream_sessions > 0:
+            diags.append(
+                f"INFO: {self._stream_sessions} streaming session(s) "
+                f"started (Start Accept events).")
+
         if self.media_data_count > 0:
             diags.append(
                 f"INFO: {self.media_data_count} A2DP media data "
