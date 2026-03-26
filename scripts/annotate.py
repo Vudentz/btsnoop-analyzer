@@ -347,10 +347,16 @@ class LEAudioAnnotator(Annotator):
         self._ase_confirmed = False
         # Per-ASE stream tracking: ase_id -> {codec, config, state, direction}
         self._ase_streams = {}
-        # Per-ASE peak state: last non-terminal state (not Idle/Releasing)
+        # Per-ASE peak state: highest state reached (by rank order)
         self._ase_peak_state = {}
-        # Terminal ASE states that indicate the stream no longer exists
-        self._ASE_TERMINAL_STATES = {"Idle", "Releasing", "0x00"}
+        # ASE state rank for peak tracking: higher = more progressed
+        self._ASE_STATE_RANK = {
+            "Codec Configured": 1,
+            "QoS Configured": 2,
+            "Enabling": 3,
+            "Streaming": 4,
+            "Disabling": 3,  # same level as Enabling
+        }
 
     @staticmethod
     def _extract_att_data(body_lines):
@@ -631,7 +637,10 @@ class LEAudioAnnotator(Annotator):
             if ase_id != "?":
                 stream = self._ase_streams.setdefault(ase_id, {})
                 stream["state"] = state_name
-                if state_name not in self._ASE_TERMINAL_STATES:
+                new_rank = self._ASE_STATE_RANK.get(state_name, 0)
+                old_peak = self._ase_peak_state.get(ase_id, "")
+                old_rank = self._ASE_STATE_RANK.get(old_peak, 0)
+                if new_rank > old_rank:
                     self._ase_peak_state[ase_id] = state_name
 
     def annotate_packet(self, pkt):
@@ -734,7 +743,10 @@ class LEAudioAnnotator(Annotator):
                 ase_id = int(ase_m.group(1))
                 stream = self._ase_streams.setdefault(ase_id, {})
                 stream["state"] = state
-                if state not in self._ASE_TERMINAL_STATES:
+                new_rank = self._ASE_STATE_RANK.get(state, 0)
+                old_peak = self._ase_peak_state.get(ase_id, "")
+                old_rank = self._ASE_STATE_RANK.get(old_peak, 0)
+                if new_rank > old_rank:
                     self._ase_peak_state[ase_id] = state
 
         # --- Raw ATT fallback for ASE operations ---
@@ -940,8 +952,14 @@ class A2DPAnnotator(Annotator):
         self._stream_config = {}
         # Number of streaming sessions (Start Accept count)
         self._stream_sessions = 0
-        # Per-SEID peak state: last non-terminal state (not idle/closing)
+        # Per-SEID peak state: highest state reached (by rank order)
         self._seid_peak_state = {}
+        # AVDTP state rank for peak tracking: higher = more progressed
+        self._STATE_RANK = {
+            "configured": 1,
+            "open": 2,
+            "streaming": 3,
+        }
         # AVDTP label -> SEID mapping for correlating commands to responses
         self._label_seid = {}
         # AVDTP label -> config mapping for Set Configuration commands
@@ -951,8 +969,11 @@ class A2DPAnnotator(Annotator):
         """Record an AVDTP state transition for a SEID."""
         old = self._seid_state.get(seid, "idle")
         self._seid_state[seid] = new_state
-        # Track the last non-terminal state for STREAM diagnostics
-        if new_state not in ("idle", "closing", "aborting"):
+        # Track the highest state reached (by rank) for STREAM lines
+        new_rank = self._STATE_RANK.get(new_state, 0)
+        old_peak = self._seid_peak_state.get(seid, "")
+        old_rank = self._STATE_RANK.get(old_peak, 0)
+        if new_rank > old_rank:
             self._seid_peak_state[seid] = new_state
         self._seid_transitions[seid].append(
             (timestamp, old, new_state, trigger))
