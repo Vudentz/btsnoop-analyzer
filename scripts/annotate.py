@@ -654,6 +654,10 @@ class LEAudioAnnotator(Annotator):
                 stream["codec"] = codec_name
                 if cfg_parts:
                     stream["config"] = ", ".join(cfg_parts)
+                # Config Codec implies Codec Configured state
+                stream.setdefault("state", "Codec Configured")
+                if ase_id not in self._ase_peak_state:
+                    self._ase_peak_state[ase_id] = "Codec Configured"
                 # Record first Config Codec packet per ASE
                 if ase_id not in self._ase_first_pkt:
                     self._ase_first_pkt[ase_id] = pkt
@@ -807,6 +811,10 @@ class LEAudioAnnotator(Annotator):
                     r"Codec:\s*(.+?)(?:\s*\(|$)", body_text)
                 if codec_m:
                     stream["codec"] = codec_m.group(1).strip()
+                # Config Codec implies Codec Configured state
+                stream.setdefault("state", "Codec Configured")
+                if ase_id not in self._ase_peak_state:
+                    self._ase_peak_state[ase_id] = "Codec Configured"
                 # Record first Config Codec packet per ASE
                 if ase_id not in self._ase_first_pkt:
                     self._ase_first_pkt[ase_id] = pkt
@@ -919,7 +927,8 @@ class LEAudioAnnotator(Annotator):
             self._tag(pkt, ["HCI", "LE"],
                       annotation=f"LE connection: {status}")
 
-        elif "Disconnect" in s and pkt.direction in ("<", ">"):
+        elif "Disconnect" in s and pkt.direction in ("<", ">") \
+                and not pkt.tags:
             self._tag_disconnect(pkt)
 
     def finalize(self, packets):
@@ -1770,7 +1779,8 @@ class HFPAnnotator(Annotator):
             self._tag(pkt, "HCI",
                       annotation=f"Connection: {status}")
 
-        elif "Disconnect" in s and pkt.direction in ("<", ">"):
+        elif "Disconnect" in s and pkt.direction in ("<", ">") \
+                and not pkt.tags:
             self._tag_disconnect(pkt)
 
     def finalize(self, packets):

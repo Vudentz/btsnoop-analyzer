@@ -736,6 +736,12 @@ def main():
     provider_fn = PROVIDERS[args.provider]
     analysis = provider_fn(system_prompt, user_prompt, args.model)
 
+    # Strip <output-template> wrapper that some LLMs echo back
+    analysis = re.sub(
+        r"^\s*<output-template>\s*\n?", "", analysis)
+    analysis = re.sub(
+        r"\n?\s*</output-template>\s*$", "", analysis)
+
     # Wrap in a "Step 5" heading for consistency when using --output-dir
     if args.output_dir:
         analysis = f"## Step 5: LLM Analysis\n\n{analysis}"
