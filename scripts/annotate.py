@@ -743,15 +743,15 @@ class LEAudioAnnotator(Annotator):
             self.saw_create_cis = True
 
         elif "Setup ISO" in full or "Setup Isochrono" in full:
-            # Capture the coding format if present
-            fmt_m = re.search(r"Coding Format:\s*(.+?)(?:\s*$)",
-                              body_text, re.MULTILINE)
-            fmt_note = ""
-            if fmt_m:
-                fmt_note = f" (Coding Format: {fmt_m.group(1).strip()})"
+            # Capture Data Path field (HCI, Codec, Vendor, etc.)
+            dp_m = re.search(r"Data Path:\s*(.+?)(?:\s*$)",
+                             body_text, re.MULTILINE)
+            dp_note = ""
+            if dp_m:
+                dp_note = f" (Data Path: {dp_m.group(1).strip()})"
                 self.saw_coding_format = True
             self._tag(pkt, ["CIS", "HCI"],
-                      annotation=f"ISO data path configured{fmt_note}")
+                      annotation=f"ISO data path configured{dp_note}")
             self.saw_setup_iso = True
 
         elif re.match(r'[<>]\s*LE-CIS:', pkt._raw_header) or \
