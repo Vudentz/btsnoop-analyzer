@@ -67,12 +67,18 @@ class TestLEAudioCISAnnotation:
     # --- Decoded annotations ---
 
     def test_config_codec_annotation(self, le_audio_cis_text):
-        """Config Codec should decode codec name (LC3)."""
+        """Config Codec should decode codec name (LC3) and CC LTV."""
         packets, _, _ = self._annotate(le_audio_cis_text)
         codec_pkts = [p for p in packets
-                      if "Config Codec" in p.annotation]
+                      if "Config Codec" in p.annotation
+                      and "response" not in p.annotation]
         assert len(codec_pkts) >= 1
-        assert any("LC3" in p.annotation for p in codec_pkts)
+        ann = codec_pkts[0].annotation
+        assert "LC3" in ann
+        # CC LTV should decode sampling freq, frame duration, octets
+        assert "48kHz" in ann
+        assert "7.5ms" in ann
+        assert "90oct" in ann
 
     def test_config_qos_annotation(self, le_audio_cis_text):
         """Config QoS should decode CIG and CIS IDs."""

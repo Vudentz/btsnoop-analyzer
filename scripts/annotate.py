@@ -372,7 +372,9 @@ class LEAudioAnnotator(Annotator):
                     data_bytes.extend(
                         int(b, 16) for b in hex_part.group(1).split()
                     )
-                in_data = False
+                else:
+                    # Non-hex line ends the data block
+                    in_data = False
         return handle, data_bytes
 
     def _buffer_att_write(self, pkt, body_text):
@@ -478,6 +480,58 @@ class LEAudioAnnotator(Annotator):
         for pkt, handle, data in self._notify_candidates:
             self._tag_ase_notification(pkt, handle, data)
 
+    # Sampling Frequency index values (BAP Assigned Numbers)
+    _SAMPLING_FREQ = {
+        0x01: "8kHz", 0x02: "11.025kHz", 0x03: "16kHz",
+        0x04: "22.05kHz", 0x05: "24kHz", 0x06: "32kHz",
+        0x07: "44.1kHz", 0x08: "48kHz", 0x09: "88.2kHz",
+        0x0a: "96kHz", 0x0b: "176.4kHz", 0x0c: "192kHz",
+        0x0d: "384kHz",
+    }
+    # Frame Duration index values
+    _FRAME_DURATION = {0x00: "7.5ms", 0x01: "10ms"}
+
+    @staticmethod
+    def _parse_cc_ltv(data, cc_offset):
+        """Parse Codec Configuration LTV bytes from Config Codec data.
+
+        Args:
+            data: Full ASE CP write data bytes.
+            cc_offset: Byte offset where CC LTV structures begin.
+
+        Returns:
+            dict with decoded CC fields (sampling_freq, frame_duration,
+            octets_per_frame, channel_alloc) or empty dict.
+        """
+        cc_len_idx = cc_offset - 1  # cc_length byte precedes CC data
+        if len(data) <= cc_offset:
+            return {}
+        cc_len = data[cc_len_idx]
+        cc = data[cc_offset:cc_offset + cc_len]
+        result = {}
+        i = 0
+        while i < len(cc):
+            if i + 1 >= len(cc):
+                break
+            length = cc[i]
+            if length == 0 or i + length >= len(cc):
+                break
+            typ = cc[i + 1]
+            val = cc[i + 2:i + 1 + length]
+            if typ == 0x01 and len(val) >= 1:
+                result["sampling_freq"] = val[0]
+            elif typ == 0x02 and len(val) >= 1:
+                result["frame_duration"] = val[0]
+            elif typ == 0x03 and len(val) >= 4:
+                result["channel_alloc"] = int.from_bytes(val[:4], "little")
+            elif typ == 0x04 and len(val) >= 2:
+                result["octets_per_frame"] = int.from_bytes(
+                    val[:2], "little")
+            elif typ == 0x05 and len(val) >= 1:
+                result["blocks_per_sdu"] = val[0]
+            i += 1 + length
+        return result
+
     def _tag_ase_write(self, pkt, handle, opcode, data):
         """Tag an ASE CP write packet (post-confirmation)."""
         op_name = self._ASE_OPCODES.get(opcode, f"0x{opcode:02x}")
@@ -485,8 +539,8 @@ class LEAudioAnnotator(Annotator):
         ase_id = data[2] if len(data) >= 3 else "?"
         details = f"ASE CP {op_name}, ASE ID={ase_id}"
         # Enrich with opcode-specific decoded info
-        if opcode == 0x01 and len(data) >= 8:
-            # Config Codec: decode target latency + codec
+        if opcode == 0x01 and len(data) >= 11:
+            # Config Codec: decode target latency + codec + CC LTV
             target_latency = data[3]
             tl_names = {1: "Low Latency", 2: "Balanced",
                         3: "High Reliability"}
@@ -498,6 +552,25 @@ class LEAudioAnnotator(Annotator):
             codec_name = codec_names.get(coding_format,
                                          f"0x{coding_format:02x}")
             details += f", Codec={codec_name}, Latency={tl_name}"
+            # Parse CC LTV bytes (start at data[11] after cc_length)
+            cc = self._parse_cc_ltv(data, 11)
+            if cc:
+                cc_parts = []
+                freq_idx = cc.get("sampling_freq")
+                if freq_idx is not None:
+                    cc_parts.append(
+                        self._SAMPLING_FREQ.get(freq_idx,
+                                                f"0x{freq_idx:02x}"))
+                dur_idx = cc.get("frame_duration")
+                if dur_idx is not None:
+                    cc_parts.append(
+                        self._FRAME_DURATION.get(dur_idx,
+                                                 f"0x{dur_idx:02x}"))
+                octets = cc.get("octets_per_frame")
+                if octets is not None:
+                    cc_parts.append(f"{octets}oct")
+                if cc_parts:
+                    details += f" ({', '.join(cc_parts)})"
         elif opcode == 0x02 and len(data) >= 5:
             # Config QoS: decode CIG/CIS IDs
             cig_id = data[3]
@@ -1358,6 +1431,14 @@ def _format_packet(pkt, include_body=True):
     return "\n".join(parts)
 
 
+def _format_packet_raw(pkt, include_body=True):
+    """Format a packet as raw btmon output (no annotation markers)."""
+    parts = [pkt._raw_header]
+    if include_body:
+        parts.extend(pkt.body)
+    return "\n".join(parts)
+
+
 def annotate_trace(text, focus):
     """Parse and annotate a decoded btmon trace.
 
@@ -1395,15 +1476,19 @@ def annotate_trace(text, focus):
 
 
 def prefilter(text, focus, max_chars=24000, packets=None, diags=None):
-    """Produce an annotated, prefiltered log for LLM consumption.
+    """Produce a structured prefiltered result for LLM consumption.
+
+    The output separates raw btmon packets from semantic annotations so
+    the LLM receives clean trace data alongside decoded metadata.
 
     Steps:
         1. Parse decoded btmon text into packets (or use pre-annotated)
         2. Run the focus-specific annotator(s) to tag packets
-        3. Build output including key packets (full), context packets
-           (header + annotation only if budget is tight), and skip
-           gap markers
-        4. Prepend a summary header with diagnostics and timeline
+        3. Build raw trace (key packets with full body, context with
+           header-only, skip gap markers) — no annotation markers
+        4. Build annotations section (timeline, per-packet tags and
+           decoded meanings, diagnostics)
+        5. Build combined summary header
 
     Args:
         text: Full decoded btmon output.
@@ -1414,8 +1499,10 @@ def prefilter(text, focus, max_chars=24000, packets=None, diags=None):
 
     Returns:
         (prefiltered_text, diagnostics_list)
-        The prefiltered text is ready for LLM consumption.
-        diagnostics_list contains absence errors and info messages.
+        The prefiltered_text contains clearly separated sections:
+        a summary header, a raw trace section, and an annotation
+        section.  diagnostics_list contains absence errors and info
+        messages.
     """
     if packets is not None:
         # Use pre-annotated data
@@ -1434,7 +1521,7 @@ def prefilter(text, focus, max_chars=24000, packets=None, diags=None):
     key_pkts = [p for p in packets if p.priority == "key"]
     ctx_pkts = [p for p in packets if p.priority == "context"]
 
-    # Build the summary header
+    # --- Build summary header ---
     header_lines = [f"=== Prefiltered btmon log: {focus} ==="]
     header_lines.append(f"Total packets: {len(packets)}, "
                         f"Key: {len(key_pkts)}, "
@@ -1453,56 +1540,71 @@ def prefilter(text, focus, max_chars=24000, packets=None, diags=None):
         for d in all_diags:
             header_lines.append(f"  * {d}")
 
-    # Build timeline of key events
-    header_lines.append("")
-    header_lines.append("Key event timeline:")
+    header = "\n".join(header_lines)
+
+    # --- Build annotations section ---
+    # Timeline + per-packet annotation table (separate from raw trace)
+    ann_lines = ["=== Annotations ===", ""]
+    ann_lines.append("Key event timeline:")
     for pkt in key_pkts[:30]:  # Cap timeline at 30 entries
-        header_lines.append(
+        ann_lines.append(
             f"  {pkt.timestamp:>12.3f}s  #{pkt.frame:<5d}  "
             f"{pkt.annotation}")
 
     if len(key_pkts) > 30:
-        header_lines.append(
+        ann_lines.append(
             f"  ... and {len(key_pkts) - 30} more key events")
 
-    header_lines.append("")
-    header_lines.append("=== Annotated packets ===")
-    header_lines.append("")
+    # Per-packet annotation table: frame -> decoded meaning + tags
+    ann_lines.append("")
+    ann_lines.append("Per-packet annotations (frame -> decoded meaning [tags]):")
+    included_pkts = [p for p in packets
+                     if p.priority in ("key", "context") and p.annotation]
+    for pkt in included_pkts[:60]:
+        ann_lines.append(
+            f"  #{pkt.frame:<5d} {pkt.timestamp:>9.3f}s  "
+            f"{pkt.annotation}  [{' | '.join(pkt.tags)}]")
+    if len(included_pkts) > 60:
+        ann_lines.append(
+            f"  ... and {len(included_pkts) - 60} more annotations")
 
-    header = "\n".join(header_lines)
+    annotations = "\n".join(ann_lines)
 
-    # Budget: reserve space for the header
-    body_budget = max_chars - len(header) - 100  # margin
-    if body_budget < 1000:
-        # Not enough room even for key packets -- just return header
-        return header, all_diags
+    # --- Budget allocation ---
+    # Reserve space for header + annotations, rest goes to raw trace
+    overhead = len(header) + len(annotations) + 200  # separators + margin
+    trace_budget = max_chars - overhead
+    if trace_budget < 1000:
+        # Not enough room for raw packets -- return header + annotations
+        return header + "\n\n" + annotations, all_diags
 
-    # Phase 1: Include all key packets with full body
-    output_parts = []
+    # --- Build raw trace section ---
+    raw_parts = ["=== Raw btmon packets ===", ""]
     prev_idx = -1
     chars_used = 0
 
-    # Merge key and context packets in order, key first priority
+    # Merge key and context packets in order
     tagged = [(p.line_start, p) for p in packets
               if p.priority in ("key", "context")]
     tagged.sort(key=lambda x: x[0])
 
     for _, pkt in tagged:
-        # Calculate how much this packet would cost
-        formatted = _format_packet(pkt, include_body=(pkt.priority == "key"))
+        # Raw packet text (no annotation markers)
+        formatted = _format_packet_raw(
+            pkt, include_body=(pkt.priority == "key"))
         cost = len(formatted) + 50  # gap marker overhead
 
-        if chars_used + cost > body_budget:
+        if chars_used + cost > trace_budget:
             # Context packets can be dropped to save budget
             if pkt.priority == "context":
                 continue
             # Key packet but out of budget -- switch to header-only
-            formatted = _format_packet(pkt, include_body=False)
+            formatted = _format_packet_raw(pkt, include_body=False)
             cost = len(formatted) + 50
 
-        if chars_used + cost > body_budget:
+        if chars_used + cost > trace_budget:
             # Truly out of budget
-            output_parts.append(
+            raw_parts.append(
                 f"\n[... budget exhausted, "
                 f"{len(key_pkts)} key packets total ...]\n")
             break
@@ -1513,15 +1615,18 @@ def prefilter(text, focus, max_chars=24000, packets=None, diags=None):
                               if prev_idx < p.line_start < pkt.line_start
                               and p.priority == "skip")
             if gap_packets > 0:
-                output_parts.append(
+                raw_parts.append(
                     f"\n[... {gap_packets} packets skipped ...]\n")
 
-        output_parts.append(formatted)
+        raw_parts.append(formatted)
         chars_used += cost
         prev_idx = pkt.line_end
 
-    body = "\n".join(output_parts)
-    return header + body, all_diags
+    raw_trace = "\n".join(raw_parts)
+
+    # --- Combine into final output with clear section separators ---
+    combined = "\n\n".join([header, annotations, raw_trace])
+    return combined, all_diags
 
 
 def format_markdown(packets, diags, focus):

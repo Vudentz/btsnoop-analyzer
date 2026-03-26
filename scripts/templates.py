@@ -452,8 +452,14 @@ these rules strictly:
    rows as needed.  Keep the column structure identical.
 4. **The Verdict field** must be exactly one of: `PASS`, `FAIL`, or
    `INCONCLUSIVE`.
-   - `PASS` — the protocol flow completed without errors.
-   - `FAIL` — errors, rejects, or unexpected disconnections were found.
+   - `PASS` — the protocol flow completed without errors. A clean
+     connection/setup/streaming/disconnect cycle with all operations
+     returning Success is a PASS, even if many data packets were
+     transferred. Graceful disconnects (Remote User Terminated,
+     Connection Terminated By Local Host) are normal and do NOT
+     indicate failure.
+   - `FAIL` — actual errors, rejects, non-Success status codes, or
+     unexpected disconnections were found in the trace.
    - `INCONCLUSIVE` — the trace is incomplete or ambiguous.
 5. **The one-line summary** must be a single sentence (max 120 characters).
 6. **Issues Found** must use this exact format for each issue:

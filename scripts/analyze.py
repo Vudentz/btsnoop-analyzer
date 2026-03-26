@@ -200,34 +200,49 @@ def build_prompt(decoded_text, docs_text, description, focus,
                  auto_detected=False, absence_errors=None):
     """Build the analysis prompt for the LLM."""
     clip_note = ""
-    if auto_detected or absence_errors:
-        if "=== Prefiltered btmon log:" in decoded_text:
-            clip_note = (
-                "\n\nNote: The trace below has been prefiltered with "
-                "protocol-aware annotation. Key packets are shown with "
-                "full body and semantic labels (e.g. [CIS_ESTABLISHED], "
-                "[AVDTP_START]). Context packets show header-only. "
-                "Lines like '[... N packets skipped ...]' indicate "
-                "omitted bulk data. A summary header at the top "
-                "lists diagnostics and a key event timeline."
-            )
-        elif auto_detected:
-            clip_note = (
-                "\n\nNote: The focus area was auto-detected from error "
-                "patterns in the trace. The trace below has been clipped to "
-                "show only the sections relevant to the detected problem "
-                "area, with surrounding context packets preserved. Lines "
-                "marked '[... N lines skipped ...]' indicate gaps between "
-                "relevant sections."
-            )
-        if absence_errors:
-            hints = "\n".join(f"  - {msg}" for msg in absence_errors)
-            clip_note += (
-                "\n\nThe analyzer identified these protocol-flow "
-                "issues:\n"
-                f"{hints}\n"
-                "Investigate these as likely root causes."
-            )
+    if "=== Prefiltered btmon log:" in decoded_text:
+        clip_note = (
+            "\n\nNote: The trace below has been prefiltered into three "
+            "clearly separated sections:"
+            "\n1. A SUMMARY HEADER with packet counts, time span, and "
+            "diagnostics."
+            "\n2. An ANNOTATIONS section containing a key event timeline "
+            "and per-packet decoded meanings with protocol tags "
+            "(e.g. [ASCS | ASE_CP], [CIS | HCI]). These are semantic "
+            "labels produced by the analyzer — use them to understand "
+            "what each packet does."
+            "\n3. A RAW TRACE section containing the actual btmon packet "
+            "output (headers and bodies) with no annotation markers "
+            "mixed in. Lines like '[... N packets skipped ...]' indicate "
+            "omitted bulk data (e.g. ISO streaming packets)."
+            "\n\nCross-reference the annotations with the raw trace using "
+            "frame numbers (e.g. #4, #22) to understand each packet."
+            "\n\nIMPORTANT for verdict: A trace where all operations "
+            "succeed (Status: Success), streaming completes normally, "
+            "and the connection ends with a graceful disconnect "
+            "(Remote User Terminated / Connection Terminated By Local "
+            "Host) is a PASS — not a failure. Normal ISO/CIS data "
+            "streaming volume is expected for LE Audio and is not an "
+            "issue. Only report actual errors, rejects, or unexpected "
+            "disconnections as issues."
+        )
+    elif auto_detected:
+        clip_note = (
+            "\n\nNote: The focus area was auto-detected from error "
+            "patterns in the trace. The trace below has been clipped to "
+            "show only the sections relevant to the detected problem "
+            "area, with surrounding context packets preserved. Lines "
+            "marked '[... N lines skipped ...]' indicate gaps between "
+            "relevant sections."
+        )
+    if absence_errors:
+        hints = "\n".join(f"  - {msg}" for msg in absence_errors)
+        clip_note += (
+            "\n\nThe analyzer identified these protocol-flow "
+            "issues:\n"
+            f"{hints}\n"
+            "Investigate these as likely root causes."
+        )
 
     system_prompt = f"""You are a Bluetooth protocol analyst specializing in \
 BlueZ btmon trace analysis. You have deep knowledge of HCI, L2CAP, ATT/GATT, \
