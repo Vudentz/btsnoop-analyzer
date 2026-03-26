@@ -545,10 +545,12 @@ def main():
 
     # Provider-specific context limits (in chars, ~4 chars per token).
     # GitHub Models free tier (gpt-4o-mini): 8K tokens input total.
-    # Reserve ~1K tokens for system prompt template + formatting overhead.
-    # That leaves ~7K tokens (~28K chars) shared between docs and trace.
+    # Reserve ~1.5K tokens for system prompt and ~600 tokens for template
+    # instructions.  With docs at 4K chars (~1K tokens), that totals
+    # ~3.1K tokens of overhead.  The remaining ~4.9K tokens (~16K chars
+    # at ~3.3 chars/token for btmon traces) goes to the trace.
     CONTEXT_LIMITS = {
-        "github":    {"trace": 24000, "docs": 4000},
+        "github":    {"trace": 16000, "docs": 4000},
         "openai":    {"trace": 100000, "docs": 50000},
         "anthropic": {"trace": 100000, "docs": 50000},
     }
