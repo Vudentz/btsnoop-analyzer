@@ -474,11 +474,14 @@ these rules strictly:
 7. **Recommendations** must be a numbered list.  Each item must be a
    concrete, actionable step (not generic advice).  If there are no
    recommendations, write: `No recommendations.`
-8. **Audio Streams table** — fill one row per stream endpoint from the
-   `STREAM:` diagnostics.  The ID column is the SEID (A2DP) or ASE ID
-   (LE Audio).  Direction is Sink/Source.  State is the last known
-   protocol state.  Configuration includes codec parameters (frequency,
-   channel mode, bitpool, frame duration, octets per frame, etc.).
+ 8. **Audio Streams table** — fill one row per stream endpoint from the
+    `STREAM:` diagnostics.  The ID column is the SEID (A2DP) or ASE ID
+    (LE Audio).  Direction is Sink/Source.  State is the last known
+    protocol state.  Configuration includes codec parameters (frequency,
+    channel mode, bitpool, frame duration, octets per frame, etc.).
+    If a `STREAM:` line shows `dir=?`, you may infer the direction from
+    surrounding trace context (e.g. ASE operations, SEP types); if you
+    do, append `(inferred)` to the direction value in the table.
 9. Do NOT add any text outside the template structure.  No preamble,
    no closing remarks, no apologies.
 

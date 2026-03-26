@@ -347,6 +347,10 @@ class LEAudioAnnotator(Annotator):
         self._ase_confirmed = False
         # Per-ASE stream tracking: ase_id -> {codec, config, state, direction}
         self._ase_streams = {}
+        # Per-ASE peak state: last non-terminal state (not Idle/Releasing)
+        self._ase_peak_state = {}
+        # Terminal ASE states that indicate the stream no longer exists
+        self._ASE_TERMINAL_STATES = {"Idle", "Releasing", "0x00"}
 
     @staticmethod
     def _extract_att_data(body_lines):
@@ -627,6 +631,8 @@ class LEAudioAnnotator(Annotator):
             if ase_id != "?":
                 stream = self._ase_streams.setdefault(ase_id, {})
                 stream["state"] = state_name
+                if state_name not in self._ASE_TERMINAL_STATES:
+                    self._ase_peak_state[ase_id] = state_name
 
     def annotate_packet(self, pkt):
         s = pkt.summary
@@ -728,6 +734,8 @@ class LEAudioAnnotator(Annotator):
                 ase_id = int(ase_m.group(1))
                 stream = self._ase_streams.setdefault(ase_id, {})
                 stream["state"] = state
+                if state not in self._ASE_TERMINAL_STATES:
+                    self._ase_peak_state[ase_id] = state
 
         # --- Raw ATT fallback for ASE operations ---
         # When GATT discovery is absent, btmon cannot decode LE Audio
@@ -858,7 +866,9 @@ class LEAudioAnnotator(Annotator):
         # Audio Streams table: STREAM lines for common template
         for ase_id, info in sorted(self._ase_streams.items()):
             codec = info.get("codec", "?")
-            state = info.get("state", "?")
+            # Use peak state (last non-terminal) for STREAM lines
+            state = self._ase_peak_state.get(ase_id,
+                                             info.get("state", "?"))
             config = info.get("config", "N/A")
             # Direction not available from raw ATT decoding; mark as
             # unknown so the LLM can infer from context if possible.
@@ -930,6 +940,8 @@ class A2DPAnnotator(Annotator):
         self._stream_config = {}
         # Number of streaming sessions (Start Accept count)
         self._stream_sessions = 0
+        # Per-SEID peak state: last non-terminal state (not idle/closing)
+        self._seid_peak_state = {}
         # AVDTP label -> SEID mapping for correlating commands to responses
         self._label_seid = {}
         # AVDTP label -> config mapping for Set Configuration commands
@@ -939,6 +951,9 @@ class A2DPAnnotator(Annotator):
         """Record an AVDTP state transition for a SEID."""
         old = self._seid_state.get(seid, "idle")
         self._seid_state[seid] = new_state
+        # Track the last non-terminal state for STREAM diagnostics
+        if new_state not in ("idle", "closing", "aborting"):
+            self._seid_peak_state[seid] = new_state
         self._seid_transitions[seid].append(
             (timestamp, old, new_state, trigger))
 
@@ -1494,7 +1509,7 @@ class A2DPAnnotator(Annotator):
             sep = self._discovered_seps.get(seid, {})
             direction = sep.get("sep_type", "?")
             codec = self._clean_codec_name(config.get("codec", "?"))
-            state = self._seid_state.get(seid, "idle")
+            state = self._seid_peak_state.get(seid, "configured")
             cfg_parts = []
             freq = config.get("frequency")
             if freq:
@@ -2201,8 +2216,6 @@ def format_markdown(packets, diags, focus):
     """
     key_pkts = [p for p in packets if p.priority == "key"]
     ctx_pkts = [p for p in packets if p.priority == "context"]
-    graceful = [p for p in packets
-                if "Graceful disconnect" in p.annotation]
 
     lines = ["## Step 2: Annotation", ""]
     lines.append(f"**Focus:** {focus}")
@@ -2232,27 +2245,40 @@ def format_markdown(packets, diags, focus):
                          f"*... and {len(key_pkts) - 50} more* |")
         lines.append("")
 
-    # Graceful disconnects (informational, not errors)
-    if graceful:
-        lines.append("### Graceful Disconnects")
-        lines.append("")
-        for pkt in graceful:
-            lines.append(
-                f"- #{pkt.frame} at {pkt.timestamp:.3f}s: "
-                f"{pkt.annotation}")
-        lines.append("")
-
-    # Diagnostics
-    if diags:
+    # Diagnostics table: graceful disconnects + annotator diagnostics
+    graceful = [p for p in packets
+                if p.annotation and "Graceful disconnect" in p.annotation]
+    has_diags = graceful or diags
+    if has_diags:
         lines.append("### Diagnostics")
         lines.append("")
+        lines.append("| # | Timestamp | Tags | Diagnostic |")
+        lines.append("|--:|----------:|------|------------|")
+        # Graceful disconnects as diagnostic rows
+        for pkt in graceful:
+            tags = ", ".join(f"`{t}`" for t in pkt.tags)
+            lines.append(
+                f"| #{pkt.frame} | {pkt.timestamp:.3f}s | "
+                f"{tags} | {pkt.annotation} |")
+        # Annotator diagnostics (no frame/timestamp)
         for d in diags:
             if d.startswith("ABSENCE:"):
-                lines.append(f"- :warning: {d}")
-            elif d.startswith("INFO:"):
-                lines.append(f"- :information_source: {d}")
+                lines.append(f"| - | - | - | :warning: {d} |")
+            elif d.startswith("INFO:") or d.startswith("NOTE:"):
+                lines.append(
+                    f"| - | - | - | :information_source: {d} |")
+            elif "\n" in d:
+                # Multi-line diagnostics (e.g. STATE tables): use
+                # first line in table, rest as detail below
+                first, rest = d.split("\n", 1)
+                lines.append(f"| - | - | - | {first} |")
+                lines.append("")
+                lines.append("```")
+                lines.append(rest)
+                lines.append("```")
+                lines.append("")
             else:
-                lines.append(f"- {d}")
+                lines.append(f"| - | - | - | {d} |")
         lines.append("")
 
     return "\n".join(lines)
