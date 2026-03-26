@@ -1,0 +1,9 @@
+[project]
+name = "btsnoop-analyzer"
+version = "0.1.0"
+description = "Auto-analyze btsnoop traces from GitHub issues"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]

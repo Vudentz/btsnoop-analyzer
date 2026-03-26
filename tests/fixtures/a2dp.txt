@@ -1,0 +1,265 @@
+Bluetooth monitor ver 5.86
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x00 dlen 12  #400 [hci0] 28.500270
+      L2CAP: Connection Request (0x02) ident 6 len 4
+        PSM: 25 (0x0019)
+        Source CID: 66
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0D.. flags 0x00 dlen 6  #419 [hci0] 28.516733
+      Channel: 36928 len 2 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Discover (0x01) Command (0x00) type 0x00 label 0 nosp 0
+> BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x02 dlen 10  #426 [hci0] 28.524852
+      Channel: 66 len 6 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Discover (0x01) Response Accept (0x02) type 0x00 label 0 nosp 0
+        ACP SEID: 1
+          Media Type: Audio (0x00)
+          SEP Type: SNK (0x01)
+          In use: No
+        ACP SEID: 2
+          Media Type: Audio (0x00)
+          SEP Type: SNK (0x01)
+          In use: No
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0D.. flags 0x00 dlen 7  #427 [hci0] 28.525135
+      Channel: 36928 len 3 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Get All Capabilities (0x0c) Command (0x00) type 0x00 label 1 nosp 0
+        ACP SEID: 1
+> BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x02 dlen 18  #431 [hci0] 28.532553
+      Channel: 66 len 14 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Get All Capabilities (0x0c) Response Accept (0x02) type 0x00 label 1 nosp 0
+        Service Category: Media Transport (0x01)
+        Service Category: Media Codec (0x07)
+          Media Type: Audio (0x00)
+          Media Codec: SBC (0x00)
+            Frequency: 0x30
+              44100
+              48000
+            Channel Mode: 0x0f
+              Mono
+              Dual Channel
+              Stereo
+              Joint Stereo
+            Block Length: 0xf0
+              4
+              8
+              12
+              16
+            Subbands: 0x0c
+              4
+              8
+            Allocation Method: 0x03
+              SNR
+              Loudness
+            Minimum Bitpool: 2
+            Maximum Bitpool: 52
+        Service Category: Delay Reporting (0x08)
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0D.. flags 0x00 dlen 7  #433 [hci0] 28.532934
+      Channel: 36928 len 3 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Get All Capabilities (0x0c) Command (0x00) type 0x00 label 2 nosp 0
+        ACP SEID: 2
+> BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x02 dlen 20  #437 [hci0] 28.538637
+      Channel: 66 len 16 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Get All Capabilities (0x0c) Response Accept (0x02) type 0x00 label 2 nosp 0
+        Service Category: Media Transport (0x01)
+        Service Category: Media Codec (0x07)
+          Media Type: Audio (0x00)
+          Media Codec: MPEG-2,4 AAC (0x02)
+            Object Type: 0x80
+              MPEG-2 AAC LC
+            Frequency: 0x180
+              44100
+              48000
+            Channels: 0x0c
+              1
+              2
+            Bitrate: 264630bps
+            VBR: Yes
+        Service Category: Delay Reporting (0x08)
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x00 dlen 18  #442 [hci0] 28.547270
+      Channel: 36928 len 14 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Set Configuration (0x03) Command (0x00) type 0x00 label 3 nosp 0
+        ACP SEID: 1
+        INT SEID: 2
+        Service Category: Media Transport (0x01)
+        Service Category: Media Codec (0x07)
+          Media Type: Audio (0x00)
+          Media Codec: SBC (0x00)
+            Frequency: 44100 (0x20)
+            Channel Mode: Joint Stereo (0x01)
+            Block Length: 16 (0x10)
+            Subbands: 8 (0x04)
+            Allocation Method: Loudness (0x01)
+            Minimum Bitpool: 2
+            Maximum Bitpool: 52
+> BR-ACL: Handle 256 [E8:EE:CC:5D:0D.. flags 0x02 dlen 6  #446 [hci0] 28.552360
+      Channel: 66 len 2 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Set Configuration (0x03) Response Accept (0x02) type 0x00 label 3 nosp 0
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0D.. flags 0x00 dlen 7  #447 [hci0] 28.553302
+      Channel: 36928 len 3 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Open (0x06) Command (0x00) type 0x00 label 4 nosp 0
+        ACP SEID: 1
+> BR-ACL: Handle 256 [E8:EE:CC:5D:0D.. flags 0x02 dlen 6  #452 [hci0] 28.559811
+      Channel: 66 len 2 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Open (0x06) Response Accept (0x02) type 0x00 label 4 nosp 0
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x00 dlen 12  #453 [hci0] 28.560063
+      L2CAP: Connection Request (0x02) ident 8 len 4
+        PSM: 25 (0x0019)
+        Source CID: 67
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0D.. flags 0x00 dlen 7  #471 [hci0] 28.584844
+      Channel: 36928 len 3 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Start (0x07) Command (0x00) type 0x00 label 5 nosp 0
+        ACP SEID: 1
+> BR-ACL: Handle 256 [E8:EE:CC:5D:0D.. flags 0x02 dlen 6  #495 [hci0] 28.613625
+      Channel: 66 len 2 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Start (0x07) Response Accept (0x02) type 0x00 label 5 nosp 0
+> HCI Event: Number of Completed Packets (0x13) plen 5    #496 [hci0] 28.613631
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #477: len 16 (4 Kb/s)
+        Latency: 26 msec (1-26 msec ~14 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #497 [hci0] 28.614787
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #478: len 12 (3 Kb/s)
+        Latency: 27 msec (1-27 msec ~21 msec)
+< BR-ACL: Handle 256 [E8:EE:CC:5D:.. flags 0x02 dlen 602  #506 [hci0] 28.636210
+      Channel: 41024 len 598 [PSM 25 mode Basic (0x00)] {chan 3}
+> HCI Event: Number of Completed Packets (0x13) plen 5    #507 [hci0] 28.644763
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #485: len 17 (2 Kb/s)
+        Latency: 56 msec (1-56 msec ~38 msec)
+        Channel: 12352 [PSM 3 mode Basic (0x00)] {chan 1}
+        Channel Latency: 56 msec (2-56 msec ~29 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #508 [hci0] 28.645906
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #499: len 12 (3 Kb/s)
+        Latency: 31 msec (1-56 msec ~34 msec)
+< BR-ACL: Handle 256 [E8:EE:CC:5D:.. flags 0x02 dlen 602  #511 [hci0] 28.650845
+      Channel: 41024 len 598 [PSM 25 mode Basic (0x00)] {chan 3}
+> HCI Event: Number of Completed Packets (0x13) plen 5    #765 [hci0] 30.002634
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #762: len 602 (155 Kb/s)
+        Latency: 31 msec (1-56 msec ~19 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 31 msec (4-31 msec ~19 msec)
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x00 dlen 7  #1271 [hci0] 33.641295
+      Channel: 36928 len 3 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Suspend (0x09) Command (0x00) type 0x00 label 6 nosp 0
+        ACP SEID: 1
+> BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x02 dlen 6  #1273 [hci0] 33.667410
+      Channel: 66 len 2 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Suspend (0x09) Response Accept (0x02) type 0x00 label 6 nosp 0
+< BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x00 dlen 7  #1274 [hci0] 36.372731
+      Channel: 36928 len 3 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Start (0x07) Command (0x00) type 0x00 label 7 nosp 0
+        ACP SEID: 1
+> BR-ACL: Handle 256 [E8:EE:CC:5D:0.. flags 0x02 dlen 6  #1276 [hci0] 36.378409
+      Channel: 66 len 2 [PSM 25 mode Basic (0x00)] {chan 2}
+      AVDTP: Start (0x07) Response Accept (0x02) type 0x00 label 7 nosp 0
+> HCI Event: Number of Completed Packets (0x13) plen 5   #1328 [hci0] 36.733773
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #1326: len 602 (240 Kb/s)
+        Latency: 20 msec (1-56 msec ~14 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 20 msec (4-31 msec ~14 msec)
+< BR-ACL: Handle 256 [E8:EE:CC:5D.. flags 0x02 dlen 602  #1588 [hci0] 38.614374
+      Channel: 41024 len 598 [PSM 25 mode Basic (0x00)] {chan 3}
+> HCI Event: Number of Completed Packets (0x13) plen 5   #1698 [hci0] 39.418423
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #1696: len 602 (240 Kb/s)
+        Latency: 20 msec (1-56 msec ~13 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 20 msec (4-31 msec ~13 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #2070 [hci0] 42.077381
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #2068: len 602 (209 Kb/s)
+        Latency: 23 msec (1-56 msec ~14 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 23 msec (4-31 msec ~14 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #2260 [hci0] 43.455822
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #2258: len 602 (209 Kb/s)
+        Latency: 23 msec (1-56 msec ~16 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 23 msec (4-31 msec ~16 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #2262 [hci0] 43.467353
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #2259: len 602 (240 Kb/s)
+        Latency: 20 msec (1-56 msec ~18 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 20 msec (4-31 msec ~18 msec)
+< BR-ACL: Handle 256 [E8:EE:CC:5D.. flags 0x02 dlen 602  #2594 [hci0] 45.870565
+      Channel: 41024 len 598 [PSM 25 mode Basic (0x00)] {chan 3}
+> HCI Event: Number of Completed Packets (0x13) plen 5   #2631 [hci0] 46.148535
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #2628: len 602 (155 Kb/s)
+        Latency: 31 msec (1-56 msec ~19 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 31 msec (4-31 msec ~19 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #2632 [hci0] 46.152154
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #2629: len 602 (240 Kb/s)
+        Latency: 20 msec (1-56 msec ~19 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 20 msec (4-31 msec ~19 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #2812 [hci0] 47.462240
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #2810: len 602 (200 Kb/s)
+        Latency: 24 msec (1-56 msec ~15 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 24 msec (4-31 msec ~15 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #3182 [hci0] 50.143460
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #3180: len 602 (240 Kb/s)
+        Latency: 20 msec (1-56 msec ~14 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 20 msec (4-31 msec ~14 msec)
+< BR-ACL: Handle 256 [E8:EE:CC:5D.. flags 0x02 dlen 602  #3594 [hci0] 53.126806
+      Channel: 41024 len 598 [PSM 25 mode Basic (0x00)] {chan 3}
+> HCI Event: Number of Completed Packets (0x13) plen 5   #3738 [hci0] 54.177195
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #3736: len 602 (240 Kb/s)
+        Latency: 20 msec (1-56 msec ~13 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 20 msec (4-31 msec ~13 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #3924 [hci0] 55.530779
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #3922: len 602 (209 Kb/s)
+        Latency: 23 msec (1-56 msec ~14 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 23 msec (4-31 msec ~14 msec)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #4104 [hci0] 56.837090
+        Num handles: 1
+        Handle: 256 (BR-ACL) Address: E8:EE:CC:5D:0D:BB (Fantasia Trading LLC)
+        Count: 1
+        #4102: len 602 (200 Kb/s)
+        Latency: 24 msec (1-56 msec ~14 msec)
+        Channel: 41024 [PSM 25 mode Basic (0x00)] {chan 3}
+        Channel Latency: 24 msec (4-31 msec ~14 msec)

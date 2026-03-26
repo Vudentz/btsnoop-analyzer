@@ -1,0 +1,140 @@
+Bluetooth monitor ver 5.86
+> ACL: Handle 2048 flags 0x02 dlen 37                       #4 [hci0] 62.965469
+      ATT: Write Command (0x52) len 32
+        Handle: 0x0095
+          Data[30]:
+        01 01 01 02 02 06 00 00 00 00 13 02 01 08 02 02  ................
+        00 05 03 03 00 00 00 03 04 5a 00 02 05 01        .........Z....  
+< ACL: Handle 2048 flags 0x00 dlen 12                       #5 [hci0] 62.966205
+      ATT: Handle Value Notification (0x1b) len 7
+        Handle: 0x0095
+          Data[5]:
+        01 01 01 00 00                                   .....           
+< ACL: Handle 2048 flags 0x00 dlen 51                       #6 [hci0] 62.969472
+      ATT: Handle Value Notification (0x1b) len 46
+        Handle: 0x0089
+          Data[44]:
+        01 01 00 02 05 0a 00 20 4e 00 40 9c 00 20 4e 00  ....... N.@.. N.
+        40 9c 00 06 00 00 00 00 13 02 01 08 02 02 00 05  @...............
+        03 03 00 00 00 03 04 5a 00 02 05 01              .......Z....    
+> ACL: Handle 2048 flags 0x02 dlen 25                       #9 [hci0] 63.104611
+      ATT: Write Command (0x52) len 20
+        Handle: 0x0095
+          Data[18]:
+        02 01 01 1c 00 4c 1d 00 00 02 b4 00 05 0f 00 40  .....L.........@
+        9c 00                                            ..              
+< ACL: Handle 2048 flags 0x00 dlen 24                      #10 [hci0] 63.105504
+      ATT: Handle Value Notification (0x1b) len 19
+        Handle: 0x0089
+          Data[17]:
+        01 02 1c 00 4c 1d 00 00 02 b4 00 05 0f 00 40 9c  ....L.........@.
+        00                                               .               
+< ACL: Handle 2048 flags 0x00 dlen 12                      #11 [hci0] 63.105569
+      ATT: Handle Value Notification (0x1b) len 7
+        Handle: 0x0095
+          Data[5]:
+        02 01 01 00 00                                   .....           
+> ACL: Handle 2048 flags 0x02 dlen 17                      #14 [hci0] 63.190428
+      ATT: Write Command (0x52) len 12
+        Handle: 0x0095
+          Data[10]:
+        03 01 01 06 03 02 01 00 01 05                    ..........      
+< ACL: Handle 2048 flags 0x00 dlen 18                      #15 [hci0] 63.190995
+      ATT: Handle Value Notification (0x1b) len 13
+        Handle: 0x0089
+          Data[11]:
+        01 03 1c 00 06 03 02 01 00 01 05                 ...........     
+< ACL: Handle 2048 flags 0x00 dlen 12                      #16 [hci0] 63.191056
+      ATT: Handle Value Notification (0x1b) len 7
+        Handle: 0x0095
+          Data[5]:
+        03 01 01 00 00                                   .....           
+> HCI Event: LE Meta Event (0x3e) plen 7                   #19 [hci0] 63.282264
+      LE Connected Isochronous Stream Request (0x1a)
+        ACL Handle: 2048
+        CIS Handle: 2304
+        CIG ID: 0x1c
+        CIS ID: 0x00
+> HCI Event: Command Status (0x0f) plen 4                  #21 [hci0] 63.284367
+      LE Accept Connected Isochronous Stream Request (0x08|0x0066) ncmd 1
+        Status: Success (0x00)
+> HCI Event: LE Meta Event (0x3e) plen 29                  #22 [hci0] 63.599436
+      LE Connected Isochronous Stream Established (0x19)
+        Status: Success (0x00)
+        Connection Handle: 2304
+        CIG Synchronization Delay: 3222 us (0x000c96)
+        CIS Synchronization Delay: 3222 us (0x000c96)
+        Central to Peripheral Latency: 10722 us (0x0029e2)
+        Peripheral to Central Latency: 3222 us (0x000c96)
+        Central to Peripheral PHY: LE 2M (0x02)
+        Peripheral to Central PHY: LE 2M (0x02)
+        Number of Subevents: 3
+        Central to Peripheral Burst Number: 1
+        Peripheral to Central Burst Number: 0
+        Central to Peripheral Flush Timeout: 2
+        Peripheral to Central Flush Timeout: 1
+        Central to Peripheral MTU: 180
+        Peripheral to Central MTU: 0
+        ISO Interval: 7.50 msec (0x0006)
+< HCI Command: LE Setup Isochrono.. (0x08|0x006e) plen 13  #23 [hci0] 63.599816
+        Handle: 2304
+        Data Path Direction: Output (Controller to Host) (0x01)
+        Data Path: HCI (0x00)
+        Coding Format: Transparent (0x03)
+        Company Codec ID: Ericsson Technology Licensing (0)
+        Vendor Codec ID: 0
+        Controller Delay: 0 us (0x000000)
+        Codec Configuration Length: 0
+        Codec Configuration[0]:
+> HCI Event: Command Complete (0x0e) plen 6                #24 [hci0] 63.601319
+      LE Setup Isochronous Data Path (0x08|0x006e) ncmd 1
+        Status: Success (0x00)
+        Handle: 2304
+< ACL: Handle 2048 flags 0x00 dlen 18                      #25 [hci0] 63.602085
+      ATT: Handle Value Notification (0x1b) len 13
+        Handle: 0x0089
+          Data[11]:
+        01 04 1c 00 06 03 02 01 00 01 05                 ...........     
+> LE-CIS: Handle 2304 SN 4.. flags 0x02 dlen 184 slen 180  #26 [hci0] 63.636490
+> LE-CIS: Handle 2304 SN 5.. flags 0x02 dlen 184 slen 180  #27 [hci0] 63.644488
+> ACL: Handle 2048 flags 0x02 dlen 17                      #35 [hci0] 63.688401
+      ATT: Write Command (0x52) len 12
+        Handle: 0x0095
+          Data[10]:
+        07 01 01 06 03 02 05 00 01 05                    ..........      
+< ACL: Handle 2048 flags 0x00 dlen 12                      #36 [hci0] 63.689004
+      ATT: Handle Value Notification (0x1b) len 7
+        Handle: 0x0095
+          Data[5]:
+        07 01 01 00 00                                   .....           
+> ACL: Handle 2048 flags 0x02 dlen 10                    #4041 [hci0] 93.796567
+      ATT: Write Command (0x52) len 5
+        Handle: 0x0095
+          Data[3]:
+        05 01 01                                         ...             
+< ACL: Handle 2048 flags 0x00 dlen 24                    #4042 [hci0] 93.797267
+      ATT: Handle Value Notification (0x1b) len 19
+        Handle: 0x0089
+          Data[17]:
+        01 02 1c 00 4c 1d 00 00 02 b4 00 05 0f 00 40 9c  ....L.........@.
+        00                                               .               
+< ACL: Handle 2048 flags 0x00 dlen 12                    #4043 [hci0] 93.797345
+      ATT: Handle Value Notification (0x1b) len 7
+        Handle: 0x0095
+          Data[5]:
+        05 01 01 00 00                                   .....           
+< HCI Command: Disconnect (0x01|0x0006) plen 3           #4044 [hci0] 93.797364
+        Handle: 2304 (LE-CIS) Address: 00:00:00:00:00:00 (OUI 00-00-00)
+        Reason: Remote User Terminated Connection (0x13)
+> HCI Event: Command Status (0x0f) plen 4                #4045 [hci0] 93.798567
+      Disconnect (0x01|0x0006) ncmd 1
+        Status: Success (0x00)
+> HCI Event: Disconnect Complete (0x05) plen 4           #4046 [hci0] 93.836605
+        Status: Success (0x00)
+        Handle: 2304 (LE-CIS) Address: 00:00:00:00:00:00 (OUI 00-00-00)
+        Reason: Connection Terminated By Local Host (0x16)
+> ACL: Handle 2048 flags 0x02 dlen 10                    #4049 [hci0] 93.932598
+      ATT: Write Command (0x52) len 5
+        Handle: 0x0095
+          Data[3]:
+        08 01 01                                         ...             
