@@ -397,7 +397,7 @@ class LEAudioAnnotator(Annotator):
         self.saw_coding_format = False
         self.cis_data_count = 0
         self.ase_cp_handle = None   # confirmed ASE CP handle
-        self.ase_state_handle = None  # confirmed ASE state handle
+        self._ase_state_handles = set()  # confirmed ASE state handles
         # Candidate ATT writes/notifications buffered before confirmation
         # Each entry: (pkt, handle, opcode, data_bytes)
         self._ase_candidates = []
@@ -496,10 +496,15 @@ class LEAudioAnnotator(Annotator):
 
         if self._ase_confirmed:
             # Already confirmed — tag immediately if on known handles
+            # or any non-CP handle with valid ASE state data
             if handle == self.ase_cp_handle or \
-                    handle == self.ase_state_handle or \
-                    (self.ase_cp_handle and handle != self.ase_cp_handle
-                     and self.ase_state_handle is None):
+                    handle in self._ase_state_handles:
+                self._tag_ase_notification(pkt, handle, data)
+                return True
+            # Unknown handle — try to adopt if data looks like ASE state
+            if self.ase_cp_handle and handle != self.ase_cp_handle \
+                    and len(data) >= 2 and 1 <= data[0] <= 255 \
+                    and data[1] in self._ASE_STATES:
                 self._tag_ase_notification(pkt, handle, data)
                 return True
             return False
@@ -674,6 +679,24 @@ class LEAudioAnnotator(Annotator):
         self._tag(pkt, ["ASCS", "ASE_CP"], annotation=details)
         self.saw_ase_control = True
 
+    def _tag_ase_state(self, pkt, data):
+        """Tag and track an ASE state notification."""
+        ase_id = data[0] if data else "?"
+        state_val = data[1] if len(data) >= 2 else None
+        state_name = self._ASE_STATES.get(
+            state_val,
+            f"0x{state_val:02x}" if state_val is not None else "?")
+        self._tag(pkt, ["ASCS", "ASE_STATE"],
+                  annotation=f"ASE ID={ase_id} state: {state_name}")
+        if ase_id != "?":
+            stream = self._ase_streams.setdefault(ase_id, {})
+            stream["state"] = state_name
+            new_rank = self._ASE_STATE_RANK.get(state_name, 0)
+            old_peak = self._ase_peak_state.get(ase_id, "")
+            old_rank = self._ASE_STATE_RANK.get(old_peak, 0)
+            if new_rank > old_rank:
+                self._ase_peak_state[ase_id] = state_name
+
     def _tag_ase_notification(self, pkt, handle, data):
         """Tag an ATT notification as ASE CP response or state change."""
         if handle == self.ase_cp_handle:
@@ -698,25 +721,14 @@ class LEAudioAnnotator(Annotator):
             self._tag(pkt, ["ASCS", "ASE_CP"],
                       annotation=f"ASE CP response: {op_name}, "
                       f"ASE ID={ase_id}, {resp_name}")
-        elif self.ase_state_handle is None or handle == self.ase_state_handle:
-            # ASE state notification: [ase_id, state, ...]
-            self.ase_state_handle = handle
-            ase_id = data[0] if data else "?"
-            state_val = data[1] if len(data) >= 2 else None
-            state_name = self._ASE_STATES.get(
-                state_val,
-                f"0x{state_val:02x}" if state_val is not None else "?")
-            self._tag(pkt, ["ASCS", "ASE_STATE"],
-                      annotation=f"ASE ID={ase_id} state: {state_name}")
-            # Track per-ASE state
-            if ase_id != "?":
-                stream = self._ase_streams.setdefault(ase_id, {})
-                stream["state"] = state_name
-                new_rank = self._ASE_STATE_RANK.get(state_name, 0)
-                old_peak = self._ase_peak_state.get(ase_id, "")
-                old_rank = self._ASE_STATE_RANK.get(old_peak, 0)
-                if new_rank > old_rank:
-                    self._ase_peak_state[ase_id] = state_name
+        elif handle in self._ase_state_handles:
+            # Known ASE state handle — tag directly
+            self._tag_ase_state(pkt, data)
+        elif len(data) >= 2 and 1 <= data[0] <= 255 \
+                and data[1] in self._ASE_STATES:
+            # New handle with valid ASE state data — adopt it
+            self._ase_state_handles.add(handle)
+            self._tag_ase_state(pkt, data)
 
     def annotate_packet(self, pkt):
         s = pkt.summary
