@@ -206,9 +206,15 @@ class Annotator:
         return []
 
     @staticmethod
-    def _tag(pkt, tag, priority="key", annotation=""):
-        """Helper to add a tag and upgrade priority."""
-        pkt.tags.append(tag)
+    def _tag(pkt, tags, priority="key", annotation=""):
+        """Helper to add tag(s) and upgrade priority.
+
+        ``tags`` may be a single string or a list of strings.
+        """
+        if isinstance(tags, str):
+            pkt.tags.append(tags)
+        else:
+            pkt.tags.extend(tags)
         if annotation:
             if pkt.annotation:
                 pkt.annotation += "; " + annotation
@@ -263,14 +269,14 @@ class Annotator:
                 ann = f"Graceful disconnect handle={handle}: {reason}"
             else:
                 ann = f"Graceful disconnect: {reason}"
-            self._tag(pkt, "GRACEFUL_DISCONNECT", priority="context",
+            self._tag(pkt, "HCI", priority="context",
                       annotation=ann)
         else:
             if handle != "?":
                 ann = f"Disconnect handle={handle}: {reason}"
             else:
                 ann = f"Disconnect: {reason}"
-            self._tag(pkt, "DISCONNECT", annotation=ann)
+            self._tag(pkt, "HCI", annotation=ann)
 
 
 # ---------------------------------------------------------------------------
@@ -466,11 +472,7 @@ class LEAudioAnnotator(Annotator):
         # Tag writes
         for pkt, handle, opcode, data in self._ase_candidates:
             if handle == self.ase_cp_handle:
-                op_name = self._ASE_OPCODES.get(opcode, f"0x{opcode:02x}")
-                self._tag(pkt, "ASE_CONTROL",
-                          annotation=f"ASE Control Point: {op_name}")
-                self.saw_ase_control = True
-                self._inject_ase_decode(pkt, opcode, data)
+                self._tag_ase_write(pkt, handle, opcode, data)
 
         # Tag notifications
         for pkt, handle, data in self._notify_candidates:
@@ -479,10 +481,30 @@ class LEAudioAnnotator(Annotator):
     def _tag_ase_write(self, pkt, handle, opcode, data):
         """Tag an ASE CP write packet (post-confirmation)."""
         op_name = self._ASE_OPCODES.get(opcode, f"0x{opcode:02x}")
-        self._tag(pkt, "ASE_CONTROL",
-                  annotation=f"ASE Control Point: {op_name}")
+        num_ase = data[1] if len(data) >= 2 else "?"
+        ase_id = data[2] if len(data) >= 3 else "?"
+        details = f"ASE CP {op_name}, ASE ID={ase_id}"
+        # Enrich with opcode-specific decoded info
+        if opcode == 0x01 and len(data) >= 8:
+            # Config Codec: decode target latency + codec
+            target_latency = data[3]
+            tl_names = {1: "Low Latency", 2: "Balanced",
+                        3: "High Reliability"}
+            tl_name = tl_names.get(target_latency,
+                                   f"0x{target_latency:02x}")
+            coding_format = data[5]
+            codec_names = {0x06: "LC3", 0x03: "Transparent",
+                           0xFF: "Vendor Specific"}
+            codec_name = codec_names.get(coding_format,
+                                         f"0x{coding_format:02x}")
+            details += f", Codec={codec_name}, Latency={tl_name}"
+        elif opcode == 0x02 and len(data) >= 5:
+            # Config QoS: decode CIG/CIS IDs
+            cig_id = data[3]
+            cis_id = data[4]
+            details += f", CIG=0x{cig_id:02x}, CIS=0x{cis_id:02x}"
+        self._tag(pkt, ["ASCS", "ASE_CP"], annotation=details)
         self.saw_ase_control = True
-        self._inject_ase_decode(pkt, opcode, data)
 
     def _tag_ase_notification(self, pkt, handle, data):
         """Tag an ATT notification as ASE CP response or state change."""
@@ -490,10 +512,24 @@ class LEAudioAnnotator(Annotator):
             # CP response: [opcode, num_ase, ase_id, response_code, reason]
             opcode = data[0]
             op_name = self._ASE_OPCODES.get(opcode, f"op 0x{opcode:02x}")
-            status = "Success" if len(data) >= 4 and data[3] == 0 else "?"
-            self._tag(pkt, "ASE_CP_RESPONSE", priority="context",
-                      annotation=f"ASE CP response: {op_name} ({status})")
-            self._inject_cp_response_decode(pkt, data)
+            ase_id = data[2] if len(data) >= 3 else "?"
+            resp_code = data[3] if len(data) >= 4 else None
+            resp_names = {0x00: "Success", 0x01: "Unsupported Opcode",
+                          0x02: "Invalid Length", 0x03: "Invalid ASE ID",
+                          0x04: "Invalid ASE State",
+                          0x05: "Invalid ASE Direction",
+                          0x06: "Unsupported Audio Capabilities",
+                          0x07: "Unsupported Configuration",
+                          0x08: "Rejected",
+                          0x09: "Invalid Configuration"}
+            if isinstance(resp_code, int):
+                resp_name = resp_names.get(resp_code,
+                                           f"0x{resp_code:02x}")
+            else:
+                resp_name = "?"
+            self._tag(pkt, ["ASCS", "ASE_CP"],
+                      annotation=f"ASE CP response: {op_name}, "
+                      f"ASE ID={ase_id}, {resp_name}")
         elif self.ase_state_handle is None or handle == self.ase_state_handle:
             # ASE state notification: [ase_id, state, ...]
             self.ase_state_handle = handle
@@ -502,106 +538,8 @@ class LEAudioAnnotator(Annotator):
             state_name = self._ASE_STATES.get(
                 state_val,
                 f"0x{state_val:02x}" if state_val is not None else "?")
-            self._tag(pkt, "ASE_STATE", priority="context",
-                      annotation=f"ASE ID {ase_id} state: {state_name}")
-            self._inject_ase_state_decode(pkt, data)
-
-    @staticmethod
-    def _inject_ase_decode(pkt, opcode, data):
-        """Inject decoded ASE CP fields into the packet body.
-
-        Inserts human-readable lines after the ATT header so the LLM
-        sees the decoded operation instead of raw hex.
-        """
-        opcodes = LEAudioAnnotator._ASE_OPCODES
-        op_name = opcodes.get(opcode, f"0x{opcode:02x}")
-        num_ase = data[1] if len(data) >= 2 else "?"
-        ase_id = data[2] if len(data) >= 3 else "?"
-        decoded = [
-            f"        [Decoded] ASE Control Point: {op_name} (0x{opcode:02x})",
-            f"        [Decoded]   Num ASE: {num_ase}, ASE ID: {ase_id}",
-        ]
-        # For Config Codec, decode codec ID
-        # Format: [opcode, num_ase, ase_id, target_latency, target_phy,
-        #          coding_format, company_id(2), vendor_codec_id(2),
-        #          cc_length, cc(...)]
-        if opcode == 0x01 and len(data) >= 8:
-            target_latency = data[3]
-            target_names = {1: "Low Latency", 2: "Balanced",
-                            3: "High Reliability"}
-            tl_name = target_names.get(target_latency,
-                                       f"0x{target_latency:02x}")
-            coding_format = data[5]
-            codec_names = {0x06: "LC3", 0x03: "Transparent",
-                           0xFF: "Vendor Specific"}
-            codec_name = codec_names.get(coding_format,
-                                         f"0x{coding_format:02x}")
-            decoded.append(
-                f"        [Decoded]   Target Latency: {tl_name}, "
-                f"Codec: {codec_name} (0x{coding_format:02x})")
-        # For Config QoS, decode CIG/CIS IDs
-        if opcode == 0x02 and len(data) >= 5:
-            cig_id = data[3]
-            cis_id = data[4]
-            decoded.append(
-                f"        [Decoded]   CIG ID: 0x{cig_id:02x}, "
-                f"CIS ID: 0x{cis_id:02x}")
-        # Insert after the first ATT line in body
-        insert_pos = 0
-        for i, line in enumerate(pkt.body):
-            if "ATT:" in line:
-                insert_pos = i + 1
-                break
-        pkt.body[insert_pos:insert_pos] = decoded
-
-    @staticmethod
-    def _inject_cp_response_decode(pkt, data):
-        """Inject decoded CP response fields into the packet body."""
-        opcodes = LEAudioAnnotator._ASE_OPCODES
-        opcode = data[0] if data else 0
-        op_name = opcodes.get(opcode, f"0x{opcode:02x}")
-        num_ase = data[1] if len(data) >= 2 else "?"
-        ase_id = data[2] if len(data) >= 3 else "?"
-        resp_code = data[3] if len(data) >= 4 else "?"
-        resp_names = {0x00: "Success", 0x01: "Unsupported Opcode",
-                      0x02: "Invalid Length", 0x03: "Invalid ASE ID",
-                      0x04: "Invalid ASE State", 0x05: "Invalid ASE Direction",
-                      0x06: "Unsupported Audio Capabilities",
-                      0x07: "Unsupported Configuration", 0x08: "Rejected",
-                      0x09: "Invalid Configuration"}
-        resp_name = resp_names.get(resp_code, f"0x{resp_code:02x}") \
-            if isinstance(resp_code, int) else "?"
-        decoded = [
-            f"        [Decoded] ASE CP Response: {op_name} (0x{opcode:02x})",
-            f"        [Decoded]   Num ASE: {num_ase}, ASE ID: {ase_id}, "
-            f"Response: {resp_name}",
-        ]
-        insert_pos = 0
-        for i, line in enumerate(pkt.body):
-            if "ATT:" in line:
-                insert_pos = i + 1
-                break
-        pkt.body[insert_pos:insert_pos] = decoded
-
-    @staticmethod
-    def _inject_ase_state_decode(pkt, data):
-        """Inject decoded ASE state fields into the packet body."""
-        states = LEAudioAnnotator._ASE_STATES
-        ase_id = data[0] if data else "?"
-        state_val = data[1] if len(data) >= 2 else None
-        state_name = states.get(state_val,
-                                f"0x{state_val:02x}" if state_val is not None
-                                else "?")
-        decoded = [
-            f"        [Decoded] ASE Status: ASE ID {ase_id}, "
-            f"State: {state_name}",
-        ]
-        insert_pos = 0
-        for i, line in enumerate(pkt.body):
-            if "ATT:" in line:
-                insert_pos = i + 1
-                break
-        pkt.body[insert_pos:insert_pos] = decoded
+            self._tag(pkt, ["ASCS", "ASE_STATE"],
+                      annotation=f"ASE ID={ase_id} state: {state_name}")
 
     def annotate_packet(self, pkt):
         s = pkt.summary
@@ -616,41 +554,41 @@ class LEAudioAnnotator(Annotator):
         if "Periodic Advertising Sync Established" in full or \
                 "Periodic Advertising Sync Transfer Received" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "PA_ESTABLISHED",
-                      annotation=f"PA sync established (Status: {status})")
+            self._tag(pkt, "PA",
+                      annotation=f"PA sync established ({status})")
             if "Success" in body_text:
                 self.saw_pa_sync = True
 
         elif "Periodic Advertising Create Sync" in full:
-            self._tag(pkt, "PA_CREATE_SYNC",
+            self._tag(pkt, "PA",
                       annotation="Host requesting PA sync")
 
         elif "Periodic Advertising Sync Transfer Parameters" in full:
-            self._tag(pkt, "PAST_PARAMS", priority="context",
+            self._tag(pkt, "PA",
                       annotation="PAST parameters configured")
 
         elif "Periodic Advertising Report" in full:
             if "Basic Audio Announcement" in body_text:
-                self._tag(pkt, "PA_REPORT_BASE",
+                self._tag(pkt, "PA",
                           annotation="PA Report with BASE data")
             else:
-                self._tag(pkt, "PA_REPORT", priority="context",
+                self._tag(pkt, "PA",
                           annotation="PA Report")
 
         elif "BIG Info Advertising Report" in full:
-            self._tag(pkt, "BIG_INFO",
+            self._tag(pkt, "BIG",
                       annotation="BIG Info received -- BIG exists "
                                  "on this PA train")
             self.saw_big_info = True
 
         elif "BIG Create Sync" in full:
-            self._tag(pkt, "BIG_CREATE_SYNC",
+            self._tag(pkt, "BIG",
                       annotation="Host requesting BIG sync")
             self.saw_big_create_sync = True
 
         elif "BIG Sync Established" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "BIG_SYNC_ESTABLISHED",
+            self._tag(pkt, "BIG",
                       annotation=f"BIG sync result: {status}")
             self.saw_big_sync_established = True
             if "Success" not in body_text:
@@ -658,11 +596,11 @@ class LEAudioAnnotator(Annotator):
                           annotation="BIG sync FAILED")
 
         elif "BIG Sync Lost" in full:
-            self._tag(pkt, "BIG_SYNC_LOST",
+            self._tag(pkt, "BIG",
                       annotation="BIG sync lost")
 
         elif "BIG Terminate" in full:
-            self._tag(pkt, "BIG_TERMINATE",
+            self._tag(pkt, "BIG",
                       annotation="BIG terminated")
 
         # --- Unicast CIS flow ---
@@ -676,7 +614,7 @@ class LEAudioAnnotator(Annotator):
                 if kw in body_text:
                     op = kw
                     break
-            self._tag(pkt, "ASE_CONTROL",
+            self._tag(pkt, ["ASCS", "ASE_CP"],
                       annotation=f"ASE Control Point: {op}")
             self.saw_ase_control = True
 
@@ -684,7 +622,7 @@ class LEAudioAnnotator(Annotator):
             # ASE state notification
             state_m = re.search(r"State:\s*(.+)", body_text)
             state = state_m.group(1).strip() if state_m else "?"
-            self._tag(pkt, "ASE_STATE", priority="context",
+            self._tag(pkt, ["ASCS", "ASE_STATE"],
                       annotation=f"ASE state: {state}")
 
         # --- Raw ATT fallback for ASE operations ---
@@ -692,8 +630,8 @@ class LEAudioAnnotator(Annotator):
         # GATT operations.  Buffer ATT Write Commands whose first data
         # byte matches an ASE CP opcode (0x01-0x08) and confirm only
         # when we see a state-machine-valid sequence on the same handle.
-        # Once confirmed, retroactively tag buffered packets and inject
-        # decoded fields so the LLM can understand the operations.
+        # Once confirmed, retroactively tag buffered packets with
+        # decoded info in the annotation string.
         elif self._buffer_att_write(pkt, body_text):
             pass  # tagged inside helper once confirmed
 
@@ -701,21 +639,21 @@ class LEAudioAnnotator(Annotator):
             pass  # tagged inside helper once confirmed
 
         elif "Set CIG Parameters" in full:
-            self._tag(pkt, "SET_CIG",
+            self._tag(pkt, ["CIG", "HCI"],
                       annotation="CIG parameters configured")
             self.saw_set_cig = True
 
         elif "Create CIS" in full and "Create CIS" not in body_text \
                 or re.search(r"LE Create CIS\b", full):
             # Match the HCI command; avoid matching CIS Established body
-            self._tag(pkt, "CREATE_CIS",
+            self._tag(pkt, ["CIS", "HCI"],
                       annotation="CIS creation requested")
             self.saw_create_cis = True
 
         elif "Connected Isochronous Stream Established" in full or \
                 "CIS Established" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "CIS_ESTABLISHED",
+            self._tag(pkt, ["CIS", "HCI"],
                       annotation=f"CIS established: {status}")
             self.saw_cis_established = True
             if "Success" not in body_text:
@@ -723,11 +661,11 @@ class LEAudioAnnotator(Annotator):
                           annotation="CIS establishment FAILED")
 
         elif "Accept Connected Isochronous Stream" in full:
-            self._tag(pkt, "CIS_ACCEPT",
+            self._tag(pkt, ["CIS", "HCI"],
                       annotation="CIS accept sent")
 
         elif "Connected Isochronous Stream Request" in full:
-            self._tag(pkt, "CIS_REQUEST",
+            self._tag(pkt, ["CIS", "HCI"],
                       annotation="CIS connection request from remote")
             self.saw_create_cis = True
 
@@ -739,7 +677,7 @@ class LEAudioAnnotator(Annotator):
             if fmt_m:
                 fmt_note = f" (Coding Format: {fmt_m.group(1).strip()})"
                 self.saw_coding_format = True
-            self._tag(pkt, "SETUP_ISO_PATH",
+            self._tag(pkt, ["CIS", "HCI"],
                       annotation=f"ISO data path configured{fmt_note}")
             self.saw_setup_iso = True
 
@@ -749,21 +687,21 @@ class LEAudioAnnotator(Annotator):
             self.saw_iso_data = True
             # Only tag first pair and sparse samples for timing reference
             if self.cis_data_count <= 2 or self.cis_data_count % 500 == 0:
-                self._tag(pkt, "ISO_DATA", priority="context",
+                self._tag(pkt, ["CIS", "ISO_DATA"], priority="context",
                           annotation=f"ISO data #{self.cis_data_count}")
             # else: leave as skip (bulk data)
 
         # --- BASS ---
 
         elif "Add Source" in body_text:
-            self._tag(pkt, "BASS_ADD_SOURCE",
+            self._tag(pkt, "BASS",
                       annotation="BASS Add Source")
 
         # --- Codec info ---
 
         elif "LC3" in body_text and ("Codec:" in body_text or
                                       "Sampling Frequency" in body_text):
-            self._tag(pkt, "CODEC_CONFIG", priority="context",
+            self._tag(pkt, "PACS",
                       annotation="LC3 codec configuration")
 
         # --- Connection events relevant to LE Audio ---
@@ -771,7 +709,7 @@ class LEAudioAnnotator(Annotator):
         elif "LE Enhanced Connection Complete" in full or \
                 "LE Connection Complete" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "LE_CONNECTION",
+            self._tag(pkt, ["HCI", "LE"],
                       annotation=f"LE connection: {status}")
 
         elif "Disconnect" in s and pkt.direction in ("<", ">"):
@@ -850,65 +788,65 @@ class A2DPAnnotator(Annotator):
             # Parse AVDTP signaling
             for line in [s] + pkt.body:
                 if "Discover" in line and "Response" not in line:
-                    self._tag(pkt, "AVDTP_DISCOVER",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Discover")
                     self.saw_discover = True
                     return
                 elif "Discover" in line and "Response" in line:
-                    self._tag(pkt, "AVDTP_DISCOVER_RSP",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Discover Response")
                     return
                 elif "Get All Capabilities" in line or \
                         "Get Capabilities" in line:
-                    self._tag(pkt, "AVDTP_GET_CAP", priority="context",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Get Capabilities")
                     return
                 elif "Set Configuration" in line:
                     accept = "Accept" in line
-                    self._tag(pkt, "AVDTP_SET_CONFIG",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Set Configuration"
                               + (" Accept" if accept else ""))
                     self.saw_set_config = True
                     return
                 elif "Open" in line and "AVDTP" in line:
                     accept = "Accept" in line
-                    self._tag(pkt, "AVDTP_OPEN",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Open"
                               + (" Accept" if accept else ""))
                     self.saw_open = True
                     return
                 elif "Start" in line and "AVDTP" in line:
                     accept = "Accept" in line
-                    self._tag(pkt, "AVDTP_START",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Start"
                               + (" Accept" if accept else ""))
                     self.saw_start = True
                     return
                 elif "Suspend" in line and "AVDTP" in line:
-                    self._tag(pkt, "AVDTP_SUSPEND",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Suspend")
                     return
                 elif "Close" in line and "AVDTP" in line:
-                    self._tag(pkt, "AVDTP_CLOSE",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Close")
                     return
                 elif "Abort" in line and "AVDTP" in line:
-                    self._tag(pkt, "AVDTP_ABORT",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP Abort -- ERROR")
                     return
                 elif "Response Reject" in line:
-                    self._tag(pkt, "AVDTP_REJECT",
+                    self._tag(pkt, "AVDTP",
                               annotation="AVDTP REJECTED")
                     return
 
         if "Media Codec:" in body_text:
             codec_m = re.search(r"Media Codec:\s*(.+)", body_text)
             codec = codec_m.group(1).strip() if codec_m else "?"
-            self._tag(pkt, "CODEC_CONFIG", priority="context",
+            self._tag(pkt, ["A2DP", "AVDTP"],
                       annotation=f"Codec: {codec}")
 
         elif "PSM: 25" in body_text:
-            self._tag(pkt, "L2CAP_AVDTP", priority="context",
+            self._tag(pkt, ["L2CAP", "AVDTP"],
                       annotation="L2CAP for AVDTP (PSM 25)")
 
         # ACL media transport data -- high volume, summarize
@@ -923,14 +861,14 @@ class A2DPAnnotator(Annotator):
                 self.saw_media_data = True
                 if self.media_data_count <= 2 or \
                         self.media_data_count % 500 == 0:
-                    self._tag(pkt, "MEDIA_DATA", priority="context",
+                    self._tag(pkt, "A2DP", priority="context",
                               annotation=f"A2DP media data "
                               f"#{self.media_data_count}")
 
         # Connection events
         if "Connection Complete" in full and not pkt.tags:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "CONNECTION",
+            self._tag(pkt, "HCI",
                       annotation=f"Connection: {status}")
 
         elif "Disconnect" in s and pkt.direction in ("<", ">") \
@@ -950,7 +888,7 @@ class A2DPAnnotator(Annotator):
                             r"Latency:\s*(.+)", body_text)
                         lat_str = lat_full.group(1).strip() \
                             if lat_full else f"{max_lat} msec"
-                        self._tag(pkt, "HIGH_LATENCY",
+                        self._tag(pkt, ["A2DP", "HCI"],
                                   annotation=f"High latency: {lat_str}")
 
     def finalize(self, packets):
@@ -997,32 +935,32 @@ class HFPAnnotator(Annotator):
         if "RFCOMM:" in full:
             self.saw_rfcomm = True
             if "SABM" in body_text or "UA" in body_text:
-                self._tag(pkt, "RFCOMM_SETUP",
+                self._tag(pkt, "RFCOMM",
                           annotation="RFCOMM channel setup")
             elif "UIH" in body_text:
-                self._tag(pkt, "RFCOMM_DATA", priority="context",
+                self._tag(pkt, ["RFCOMM", "HFP"],
                           annotation="RFCOMM data (AT commands)")
             elif "DISC" in body_text:
-                self._tag(pkt, "RFCOMM_DISC",
+                self._tag(pkt, "RFCOMM",
                           annotation="RFCOMM disconnect")
             else:
-                self._tag(pkt, "RFCOMM", priority="context",
+                self._tag(pkt, "RFCOMM",
                           annotation="RFCOMM")
 
         elif "PSM: 3" in body_text and "PSM: 3 " not in body_text:
             # PSM 3 = RFCOMM
-            self._tag(pkt, "L2CAP_RFCOMM", priority="context",
+            self._tag(pkt, ["L2CAP", "RFCOMM"],
                       annotation="L2CAP for RFCOMM (PSM 3)")
 
         elif "Setup Synchronous" in full or \
                 "Enhanced Setup Synchronous" in full:
-            self._tag(pkt, "SCO_SETUP",
+            self._tag(pkt, ["SCO", "HCI"],
                       annotation="SCO/eSCO connection setup")
             self.saw_sco_setup = True
 
         elif "Synchronous Connection Complete" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "SCO_COMPLETE",
+            self._tag(pkt, ["SCO", "HCI"],
                       annotation=f"SCO connection: {status}")
             self.saw_sco_complete = True
             if "Success" not in body_text:
@@ -1030,12 +968,12 @@ class HFPAnnotator(Annotator):
                           annotation="SCO setup FAILED")
 
         elif "Synchronous Connection Changed" in full:
-            self._tag(pkt, "SCO_CHANGED", priority="context",
+            self._tag(pkt, ["SCO", "HCI"],
                       annotation="SCO parameters changed")
 
         elif "Connection Complete" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "CONNECTION",
+            self._tag(pkt, "HCI",
                       annotation=f"Connection: {status}")
 
         elif "Disconnect" in s and pkt.direction in ("<", ">"):
@@ -1073,43 +1011,43 @@ class SMPAnnotator(Annotator):
         full = s + "\n" + body_text
 
         if "Pairing Request" in full:
-            self._tag(pkt, "PAIRING_REQ",
+            self._tag(pkt, "SMP",
                       annotation="SMP Pairing Request")
             self.saw_pairing_req = True
 
         elif "Pairing Response" in full:
-            self._tag(pkt, "PAIRING_RSP",
+            self._tag(pkt, "SMP",
                       annotation="SMP Pairing Response")
             self.saw_pairing_rsp = True
 
         elif "Pairing Confirm" in full:
-            self._tag(pkt, "PAIRING_CONFIRM", priority="context",
+            self._tag(pkt, "SMP",
                       annotation="SMP Pairing Confirm")
             self.saw_confirm = True
 
         elif "Pairing Random" in full:
-            self._tag(pkt, "PAIRING_RANDOM", priority="context",
+            self._tag(pkt, "SMP",
                       annotation="SMP Pairing Random")
 
         elif "Pairing Public Key" in full:
-            self._tag(pkt, "PUBKEY",
+            self._tag(pkt, "SMP",
                       annotation="SMP Public Key (Secure Connections)")
             self.saw_pubkey = True
 
         elif "DHKey Check" in full:
-            self._tag(pkt, "DHKEY_CHECK",
+            self._tag(pkt, "SMP",
                       annotation="SMP DHKey Check")
             self.saw_dhkey = True
 
         elif "Pairing Failed" in full:
             reason_m = re.search(r"Reason:\s*(.+)", body_text)
             reason = reason_m.group(1).strip() if reason_m else "?"
-            self._tag(pkt, "PAIRING_FAILED",
+            self._tag(pkt, "SMP",
                       annotation=f"SMP Pairing FAILED: {reason}")
 
         elif "Encryption Change" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "ENCRYPTION_CHANGE",
+            self._tag(pkt, ["SMP", "HCI"],
                       annotation=f"Encryption change: {status}")
             self.saw_encrypt = True
             if "Success" not in body_text:
@@ -1117,16 +1055,16 @@ class SMPAnnotator(Annotator):
                           annotation="Encryption change FAILED")
 
         elif "Identity Resolving Key" in body_text:
-            self._tag(pkt, "IRK", priority="context",
+            self._tag(pkt, "SMP",
                       annotation="IRK exchanged")
 
         elif "Long Term Key" in body_text:
-            self._tag(pkt, "LTK", priority="context",
+            self._tag(pkt, "SMP",
                       annotation="LTK exchanged")
 
         elif "Connection Complete" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "CONNECTION",
+            self._tag(pkt, "HCI",
                       annotation=f"Connection: {status}")
 
     def finalize(self, packets):
@@ -1163,7 +1101,7 @@ class ConnectionsAnnotator(Annotator):
             handle = handle_m.group(1) if handle_m else "?"
             role_m = re.search(r"Role:\s*(.+)", body_text)
             role = role_m.group(1).strip() if role_m else ""
-            self._tag(pkt, "CONNECT",
+            self._tag(pkt, "HCI",
                       annotation=f"Connection handle={handle} "
                       f"{role} {status}")
             if "Success" not in body_text:
@@ -1175,19 +1113,19 @@ class ConnectionsAnnotator(Annotator):
             self._tag_disconnect(pkt, handle=handle)
 
         elif "Connection Update" in full:
-            self._tag(pkt, "CONN_UPDATE", priority="context",
+            self._tag(pkt, "HCI",
                       annotation="Connection parameters updated")
 
         elif "Data Length Change" in full:
-            self._tag(pkt, "DLE_CHANGE", priority="context",
+            self._tag(pkt, "HCI",
                       annotation="Data length changed")
 
         elif "Read Remote Used Features" in full:
-            self._tag(pkt, "REMOTE_FEATURES", priority="context",
+            self._tag(pkt, "HCI",
                       annotation="Remote features read")
 
         elif "Connection Timeout" in full or "Connection Failed" in full:
-            self._tag(pkt, "CONN_FAIL",
+            self._tag(pkt, "HCI",
                       annotation="Connection failure/timeout")
 
 
@@ -1209,48 +1147,48 @@ class L2CAPAnnotator(Annotator):
                     "Connection Request" in s:
                 psm_m = re.search(r"PSM:\s*(\d+)", body_text)
                 psm = psm_m.group(1) if psm_m else "?"
-                self._tag(pkt, "L2CAP_CONN_REQ",
+                self._tag(pkt, "L2CAP",
                           annotation=f"L2CAP Connect Request PSM={psm}")
             elif "Connection Response" in body_text or \
                     "Connection Response" in s:
                 result_m = re.search(r"Result:\s*(.+)", body_text)
                 result = result_m.group(1).strip() if result_m else "?"
-                self._tag(pkt, "L2CAP_CONN_RSP",
+                self._tag(pkt, "L2CAP",
                           annotation=f"L2CAP Connect Response: {result}")
                 if "Success" not in result:
                     self._tag(pkt, "ERROR")
             elif "Configuration Request" in body_text:
-                self._tag(pkt, "L2CAP_CONFIG", priority="context",
+                self._tag(pkt, "L2CAP",
                           annotation="L2CAP Config Request")
             elif "Configuration Response" in body_text:
-                self._tag(pkt, "L2CAP_CONFIG_RSP", priority="context",
+                self._tag(pkt, "L2CAP",
                           annotation="L2CAP Config Response")
             elif "Disconnection Request" in body_text:
-                self._tag(pkt, "L2CAP_DISC",
+                self._tag(pkt, "L2CAP",
                           annotation="L2CAP Disconnect Request")
             elif "Command Reject" in body_text:
-                self._tag(pkt, "L2CAP_REJECT",
+                self._tag(pkt, "L2CAP",
                           annotation="L2CAP Command REJECTED")
             else:
-                self._tag(pkt, "L2CAP", priority="context",
+                self._tag(pkt, "L2CAP",
                           annotation="L2CAP signaling")
 
         elif "LE Connection Request" in body_text or \
                 "LE Connection Request" in s:
             psm_m = re.search(r"PSM:\s*(\d+)", body_text)
             psm = psm_m.group(1) if psm_m else "?"
-            self._tag(pkt, "LE_L2CAP_COC",
+            self._tag(pkt, ["L2CAP", "LE"],
                       annotation=f"LE L2CAP CoC Request PSM={psm}")
 
         elif "LE Connection Response" in body_text or \
                 "LE Connection Response" in s:
-            self._tag(pkt, "LE_L2CAP_COC_RSP",
+            self._tag(pkt, ["L2CAP", "LE"],
                       annotation="LE L2CAP CoC Response")
 
         elif "PSM:" in body_text and not pkt.tags:
             psm_m = re.search(r"PSM:\s*(\d+)", body_text)
             psm = psm_m.group(1) if psm_m else "?"
-            self._tag(pkt, "PSM_USAGE", priority="context",
+            self._tag(pkt, "L2CAP",
                       annotation=f"PSM {psm} referenced")
 
 
@@ -1272,23 +1210,23 @@ class AdvertisingAnnotator(Annotator):
                 "BIG Info" not in full:
             addr_m = re.search(r"Address:\s*(\S+)", body_text)
             addr = addr_m.group(1) if addr_m else ""
-            self._tag(pkt, "ADV_REPORT", priority="context",
+            self._tag(pkt, ["HCI", "LE"],
                       annotation=f"Advertising report {addr}")
 
         elif "Set Extended Adv" in full or "Set Advertising" in full:
-            self._tag(pkt, "ADV_CONFIG",
+            self._tag(pkt, ["HCI", "LE"],
                       annotation="Advertising configuration")
 
         elif "Adv Enable" in full or "Advertising Enable" in full:
-            self._tag(pkt, "ADV_ENABLE",
+            self._tag(pkt, ["HCI", "LE"],
                       annotation="Advertising enable/disable")
 
         elif "Periodic Advertising" in full:
-            self._tag(pkt, "PERIODIC_ADV", priority="context",
+            self._tag(pkt, ["HCI", "LE"],
                       annotation="Periodic advertising")
 
         elif "Set Scan" in full or "Extended Scan" in full:
-            self._tag(pkt, "SCAN_CONFIG", priority="context",
+            self._tag(pkt, ["HCI", "LE"],
                       annotation="Scan configuration")
 
 
@@ -1307,27 +1245,27 @@ class HCIInitAnnotator(Annotator):
         full = s + "\n" + body_text
 
         if "Read Local Version" in full:
-            self._tag(pkt, "LOCAL_VERSION",
+            self._tag(pkt, "HCI",
                       annotation="Read Local Version")
 
         elif "Read BD ADDR" in full:
-            self._tag(pkt, "BD_ADDR",
+            self._tag(pkt, "HCI",
                       annotation="Read BD Address")
 
         elif "Read Buffer Size" in full:
-            self._tag(pkt, "BUFFER_SIZE",
+            self._tag(pkt, "HCI",
                       annotation="Read Buffer Size")
 
         elif "Set Event Mask" in full:
-            self._tag(pkt, "EVENT_MASK", priority="context",
+            self._tag(pkt, "HCI",
                       annotation="Set Event Mask")
 
         elif "Read Local Supported" in full:
-            self._tag(pkt, "LOCAL_FEATURES", priority="context",
+            self._tag(pkt, "HCI",
                       annotation="Read Local Supported Features/Commands")
 
         elif "Reset" in s and "HCI" in s:
-            self._tag(pkt, "HCI_RESET",
+            self._tag(pkt, "HCI",
                       annotation="HCI Reset")
 
         elif "Command Complete" in s or "Command Status" in s:
@@ -1335,7 +1273,7 @@ class HCIInitAnnotator(Annotator):
                     "Success" not in body_text:
                 status_m = re.search(r"Status:\s*(.+)", body_text)
                 status = status_m.group(1).strip() if status_m else "?"
-                self._tag(pkt, "CMD_ERROR",
+                self._tag(pkt, "HCI",
                           annotation=f"Command failed: {status}")
 
 
@@ -1360,15 +1298,15 @@ class DisconnectionAnnotator(Annotator):
 
         elif "Connection Complete" in full:
             status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "CONNECT",
+            self._tag(pkt, "HCI",
                       annotation=f"Connection: {status}")
 
         elif "Supervision Timeout" in body_text:
-            self._tag(pkt, "SV_TIMEOUT", priority="context",
+            self._tag(pkt, "HCI",
                       annotation="Supervision timeout parameter")
 
         elif "Connection Timeout" in full:
-            self._tag(pkt, "CONN_TIMEOUT",
+            self._tag(pkt, "HCI",
                       annotation="Connection timeout")
 
 
@@ -1413,7 +1351,7 @@ def _format_packet(pkt, include_body=True):
     """Format a packet for prefiltered output, with annotation prefix."""
     parts = []
     if pkt.annotation:
-        parts.append(f"### [{' | '.join(pkt.tags)}] {pkt.annotation}")
+        parts.append(f"### {pkt.annotation} [{' | '.join(pkt.tags)}]")
     parts.append(pkt._raw_header)
     if include_body:
         parts.extend(pkt.body)
@@ -1603,7 +1541,7 @@ def format_markdown(packets, diags, focus):
     key_pkts = [p for p in packets if p.priority == "key"]
     ctx_pkts = [p for p in packets if p.priority == "context"]
     graceful = [p for p in packets
-                if "GRACEFUL_DISCONNECT" in p.tags]
+                if "Graceful disconnect" in p.annotation]
 
     lines = ["## Step 2: Annotation", ""]
     lines.append(f"**Focus:** {focus}")
