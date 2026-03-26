@@ -205,7 +205,7 @@ class TestA2DPAnnotation:
             assert not zero_hz_re.search(p.annotation), \
                 f"Found standalone 0Hz in: {p.annotation}"
         for d in diags:
-            assert not zero_hz_re.search(d), \
+            assert not zero_hz_re.search(str(d)), \
                 f"Found standalone 0Hz in diagnostic: {d}"
 
     def test_capabilities_no_stray_comma(self, a2dp_text):

@@ -705,7 +705,8 @@ def main():
 
     # Write filter comment (Step 2)
     filter_md = filter_markdown(
-        annotated_packets, focus, filter_trace_chars, limits["trace"])
+        annotated_packets, focus, filter_trace_chars, limits["trace"],
+        prefiltered_text=decoded)
     write_step("filter", filter_md)
 
     # Write annotation comment (Step 3)

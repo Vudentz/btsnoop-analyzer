@@ -122,6 +122,56 @@ class Packet:
         return self.body_contains(pattern)
 
 
+class Diagnostic:
+    """A diagnostic message with optional packet reference.
+
+    Behaves like a string (for backward compatibility with code that
+    formats diagnostics as plain text) but carries optional frame,
+    timestamp, and tags metadata for structured rendering.
+    """
+
+    __slots__ = ("message", "frame", "timestamp", "tags")
+
+    def __init__(self, message, frame=None, timestamp=None, tags=None):
+        self.message = message
+        self.frame = frame
+        self.timestamp = timestamp
+        self.tags = tags or []
+
+    def __str__(self):
+        return self.message
+
+    def __repr__(self):
+        return f"Diagnostic({self.message!r}, frame={self.frame})"
+
+    # Support string operations used in existing code
+    def startswith(self, prefix):
+        return self.message.startswith(prefix)
+
+    def split(self, *args, **kwargs):
+        return self.message.split(*args, **kwargs)
+
+    def lower(self):
+        return self.message.lower()
+
+    def __contains__(self, item):
+        return item in self.message
+
+    def __add__(self, other):
+        return str(self) + other
+
+    def __radd__(self, other):
+        return other + str(self)
+
+    def __eq__(self, other):
+        if isinstance(other, Diagnostic):
+            return self.message == other.message
+        return self.message == other
+
+    def __hash__(self):
+        return hash(self.message)
+
+
 def parse_packets(text):
     """Parse decoded btmon output into a list of Packet objects.
 
@@ -358,6 +408,10 @@ class LEAudioAnnotator(Annotator):
         self._ase_streams = {}
         # Per-ASE peak state: highest state reached (by rank order)
         self._ase_peak_state = {}
+        # Per-ASE first frame reference (Config Codec packet)
+        self._ase_first_pkt = {}
+        # First ISO data packet reference
+        self._first_iso_pkt = None
         # ASE state rank for peak tracking: higher = more progressed
         self._ASE_STATE_RANK = {
             "Codec Configured": 1,
@@ -600,11 +654,19 @@ class LEAudioAnnotator(Annotator):
                 stream["codec"] = codec_name
                 if cfg_parts:
                     stream["config"] = ", ".join(cfg_parts)
+                # Record first Config Codec packet per ASE
+                if ase_id not in self._ase_first_pkt:
+                    self._ase_first_pkt[ase_id] = pkt
         elif opcode == 0x02 and len(data) >= 5:
             # Config QoS: decode CIG/CIS IDs
             cig_id = data[3]
             cis_id = data[4]
             details += f", CIG=0x{cig_id:02x}, CIS=0x{cis_id:02x}"
+        # Receiver Start/Stop Ready implies the remote is a receiver,
+        # so this ASE is a Source (we send audio to the remote).
+        if opcode in (0x04, 0x06) and ase_id != "?":
+            stream = self._ase_streams.setdefault(ase_id, {})
+            stream["direction"] = "Source"
         self._tag(pkt, ["ASCS", "ASE_CP"], annotation=details)
         self.saw_ase_control = True
 
@@ -732,6 +794,12 @@ class LEAudioAnnotator(Annotator):
             self._tag(pkt, ["ASCS", "ASE_CP"],
                       annotation=f"ASE Control Point: {op}")
             self.saw_ase_control = True
+            # Receiver Start/Stop Ready implies the remote is a
+            # receiver, so this ASE is a Source.
+            if ase_id is not None and op in ("Receiver Start",
+                                             "Receiver Stop"):
+                stream = self._ase_streams.setdefault(ase_id, {})
+                stream["direction"] = "Source"
             # Track per-ASE info from decoded btmon
             if ase_id is not None and op == "Config Codec":
                 stream = self._ase_streams.setdefault(ase_id, {})
@@ -739,6 +807,9 @@ class LEAudioAnnotator(Annotator):
                     r"Codec:\s*(.+?)(?:\s*\(|$)", body_text)
                 if codec_m:
                     stream["codec"] = codec_m.group(1).strip()
+                # Record first Config Codec packet per ASE
+                if ase_id not in self._ase_first_pkt:
+                    self._ase_first_pkt[ase_id] = pkt
 
         elif re.search(r"ASE ID:", body_text):
             # ASE state notification
@@ -818,6 +889,9 @@ class LEAudioAnnotator(Annotator):
                 "ISO Data" in s:
             self.cis_data_count += 1
             self.saw_iso_data = True
+            # Record first ISO data packet
+            if self._first_iso_pkt is None:
+                self._first_iso_pkt = pkt
             # Only tag first pair and sparse samples for timing reference
             if self.cis_data_count <= 2 or self.cis_data_count % 500 == 0:
                 self._tag(pkt, ["CIS", "ISO_DATA"], priority="context",
@@ -853,36 +927,36 @@ class LEAudioAnnotator(Annotator):
 
         # Broadcast receiver absence checks
         if self.saw_pa_sync and not self.saw_big_info:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: PA sync established but BIG Info Advertising "
                 "Report never received -- BIG does not exist on this "
-                "PA train, or broadcaster has not started it.")
+                "PA train, or broadcaster has not started it."))
 
         if self.saw_big_info and not self.saw_big_create_sync:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: BIG Info received but host never sent "
-                "BIG Create Sync -- host-side logic failed to act.")
+                "BIG Create Sync -- host-side logic failed to act."))
 
         if self.saw_big_create_sync and not self.saw_big_sync_established:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: BIG Create Sync sent but BIG Sync never "
-                "established -- controller could not sync to BIG.")
+                "established -- controller could not sync to BIG."))
 
         # Unicast CIS absence checks
         if self.saw_create_cis and not self.saw_cis_established:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: Create CIS sent but CIS Established never "
-                "received.")
+                "received."))
 
         if self.saw_cis_established and not self.saw_setup_iso:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: CIS established but Setup ISO Data Path "
-                "never sent.")
+                "never sent."))
 
         if self.saw_setup_iso and not self.saw_iso_data:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: ISO data path set up but no ISO data "
-                "packets observed.")
+                "packets observed."))
 
         # Audio Streams table: STREAM lines for common template
         for ase_id, info in sorted(self._ase_streams.items()):
@@ -894,17 +968,25 @@ class LEAudioAnnotator(Annotator):
             # Direction not available from raw ATT decoding; mark as
             # unknown so the LLM can infer from context if possible.
             direction = info.get("direction", "?")
-            diags.append(
+            ref_pkt = self._ase_first_pkt.get(ase_id)
+            diags.append(Diagnostic(
                 f"STREAM: id={ase_id} dir={direction} codec={codec} "
-                f"state={state} config={config}")
+                f"state={state} config={config}",
+                frame=ref_pkt.frame if ref_pkt else None,
+                timestamp=ref_pkt.timestamp if ref_pkt else None,
+                tags=["ASCS"]))
 
         # Summary annotation for ISO data (explicitly normal -- prevents
         # the LLM from flagging normal streaming volume as a problem).
         if self.cis_data_count > 0:
-            diags.append(
+            ref_pkt = self._first_iso_pkt
+            diags.append(Diagnostic(
                 f"NOTE: {self.cis_data_count} ISO/CIS data packets "
                 f"were streamed (normal LE Audio traffic, bulk data "
-                f"omitted from prefiltered log).")
+                f"omitted from prefiltered log).",
+                frame=ref_pkt.frame if ref_pkt else None,
+                timestamp=ref_pkt.timestamp if ref_pkt else None,
+                tags=["ISO_DATA"]))
 
         return diags
 
@@ -973,6 +1055,12 @@ class A2DPAnnotator(Annotator):
         self._label_seid = {}
         # AVDTP label -> config mapping for Set Configuration commands
         self._label_config = {}
+        # Per-SEID first Set Configuration packet reference
+        self._seid_first_pkt = {}
+        # First Start Accept packet reference
+        self._first_start_pkt = None
+        # First media data packet reference
+        self._first_media_pkt = None
 
     def _transition(self, seid, new_state, trigger, timestamp):
         """Record an AVDTP state transition for a SEID."""
@@ -1208,6 +1296,9 @@ class A2DPAnnotator(Annotator):
             if dlen_m and int(dlen_m.group(1)) > 200:
                 self.media_data_count += 1
                 self.saw_media_data = True
+                # Record first media data packet
+                if self._first_media_pkt is None:
+                    self._first_media_pkt = pkt
                 if self.media_data_count <= 2 or \
                         self.media_data_count % 500 == 0:
                     self._tag(pkt, "A2DP", priority="context",
@@ -1345,6 +1436,9 @@ class A2DPAnnotator(Annotator):
                         ann += f": {summary}"
                     self._tag(pkt, "AVDTP", annotation=ann)
                     self.saw_set_config = True
+                    # Record first Set Configuration packet per SEID
+                    if seid is not None and seid not in self._seid_first_pkt:
+                        self._seid_first_pkt[seid] = pkt
                     return
                 elif is_reject:
                     err_m = re.search(r"Error code:\s*(.+)", body_text)
@@ -1426,6 +1520,9 @@ class A2DPAnnotator(Annotator):
                               annotation=f"AVDTP Start Accept "
                               f"SEID {seid}")
                     self.saw_start = True
+                    # Record first Start Accept packet
+                    if self._first_start_pkt is None:
+                        self._first_start_pkt = pkt
                     return
                 elif is_reject:
                     self._tag(pkt, "AVDTP",
@@ -1516,23 +1613,27 @@ class A2DPAnnotator(Annotator):
     def finalize(self, packets):
         diags = []
         if self.saw_discover and not self.saw_set_config:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: AVDTP Discover completed but Set "
-                "Configuration never sent.")
+                "Configuration never sent."))
         if self.saw_set_config and not self.saw_open:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: AVDTP Set Configuration accepted but "
-                "Open never sent.")
+                "Open never sent."))
         if self.saw_open and not self.saw_start:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: AVDTP Open completed but Start "
-                "never sent.")
+                "never sent."))
 
         # Stream configuration summary
         for seid, config in self._stream_config.items():
             summary = self._format_config_summary(config)
-            diags.append(
-                f"CONFIG: SEID {seid} stream configured: {summary}")
+            ref_pkt = self._seid_first_pkt.get(seid)
+            diags.append(Diagnostic(
+                f"CONFIG: SEID {seid} stream configured: {summary}",
+                frame=ref_pkt.frame if ref_pkt else None,
+                timestamp=ref_pkt.timestamp if ref_pkt else None,
+                tags=["AVDTP"]))
 
         # Audio Streams table: STREAM lines for common template
         for seid, config in self._stream_config.items():
@@ -1557,9 +1658,13 @@ class A2DPAnnotator(Annotator):
             if bitrate:
                 cfg_parts.append(bitrate)
             cfg_str = ", ".join(cfg_parts) if cfg_parts else "N/A"
-            diags.append(
+            ref_pkt = self._seid_first_pkt.get(seid)
+            diags.append(Diagnostic(
                 f"STREAM: id={seid} dir={direction} codec={codec} "
-                f"state={state} config={cfg_str}")
+                f"state={state} config={cfg_str}",
+                frame=ref_pkt.frame if ref_pkt else None,
+                timestamp=ref_pkt.timestamp if ref_pkt else None,
+                tags=["AVDTP"]))
 
         # AVDTP state transition table per SEID
         for seid, transitions in self._seid_transitions.items():
@@ -1571,19 +1676,34 @@ class A2DPAnnotator(Annotator):
                 table_lines.append(
                     f"  {ts:>12.3f}s  {old:>12s} -> {new:<12s}  "
                     f"({trigger})")
-            diags.append("\n".join(table_lines))
+            # Use first transition's timestamp as reference
+            first_ts, _, _, _ = transitions[0]
+            ref_pkt = self._seid_first_pkt.get(seid)
+            diags.append(Diagnostic(
+                "\n".join(table_lines),
+                frame=ref_pkt.frame if ref_pkt else None,
+                timestamp=ref_pkt.timestamp if ref_pkt else None,
+                tags=["AVDTP"]))
 
         # Streaming session count
         if self._stream_sessions > 0:
-            diags.append(
+            ref_pkt = self._first_start_pkt
+            diags.append(Diagnostic(
                 f"INFO: {self._stream_sessions} streaming session(s) "
-                f"started (Start Accept events).")
+                f"started (Start Accept events).",
+                frame=ref_pkt.frame if ref_pkt else None,
+                timestamp=ref_pkt.timestamp if ref_pkt else None,
+                tags=["AVDTP"]))
 
         if self.media_data_count > 0:
-            diags.append(
+            ref_pkt = self._first_media_pkt
+            diags.append(Diagnostic(
                 f"INFO: {self.media_data_count} A2DP media data "
                 f"packets observed (bulk data omitted from "
-                f"prefiltered log).")
+                f"prefiltered log).",
+                frame=ref_pkt.frame if ref_pkt else None,
+                timestamp=ref_pkt.timestamp if ref_pkt else None,
+                tags=["A2DP"]))
         return diags
 
 
@@ -1656,9 +1776,9 @@ class HFPAnnotator(Annotator):
     def finalize(self, packets):
         diags = []
         if self.saw_sco_setup and not self.saw_sco_complete:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: SCO/eSCO setup sent but Synchronous "
-                "Connection Complete never received.")
+                "Connection Complete never received."))
         return diags
 
 
@@ -1744,14 +1864,14 @@ class SMPAnnotator(Annotator):
     def finalize(self, packets):
         diags = []
         if self.saw_pairing_req and not self.saw_pairing_rsp:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: Pairing Request sent but Pairing Response "
                 "never received -- peer may not support pairing "
-                "or connection was lost.")
+                "or connection was lost."))
         if self.saw_pairing_rsp and not self.saw_encrypt:
-            diags.append(
+            diags.append(Diagnostic(
                 "ABSENCE: Pairing completed but Encryption Change "
-                "never received.")
+                "never received."))
         return diags
 
 
@@ -2230,17 +2350,21 @@ def prefilter(text, focus, max_chars=24000, packets=None, diags=None):
     return combined, all_diags
 
 
-def format_filter_markdown(packets, focus, trace_chars, max_chars):
+def format_filter_markdown(packets, focus, trace_chars, max_chars,
+                           prefiltered_text=None):
     """Format prefilter summary as Step 2: Filter.
 
     Shows packet counts, time span, budget usage, and key/context/skipped
-    breakdown.
+    breakdown.  Optionally includes the prefiltered trace in a collapsible
+    text box for easy copy/paste.
 
     Args:
         packets: List of Packet objects (already annotated).
         focus: Focus area string.
         trace_chars: Number of characters in the prefiltered trace.
         max_chars: Character budget limit.
+        prefiltered_text: Optional prefiltered trace text to include
+            in a collapsible ``<details>`` block.
 
     Returns:
         Markdown string suitable for posting as a GitHub issue comment.
@@ -2264,6 +2388,17 @@ def format_filter_markdown(packets, focus, trace_chars, max_chars):
         lines.append(f"**Budget:** {trace_chars:,} / {max_chars:,} chars "
                      f"({pct}% used)")
     lines.append("")
+
+    if prefiltered_text:
+        lines.append("<details>")
+        lines.append("<summary>Prefiltered log</summary>")
+        lines.append("")
+        lines.append("```")
+        lines.append(prefiltered_text)
+        lines.append("```")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -2320,11 +2455,12 @@ def format_diagnostics_markdown(packets, diags):
 
     Includes graceful disconnect packets as rows with frame/timestamp,
     and annotator diagnostics (STREAM, CONFIG, STATE, ABSENCE, NOTE,
-    INFO) without frame/timestamp.
+    INFO) with frame/timestamp/tags when available from Diagnostic
+    objects.
 
     Args:
         packets: List of Packet objects (already annotated).
-        diags: List of diagnostic strings from the annotator.
+        diags: List of Diagnostic objects (or strings) from annotators.
 
     Returns:
         Markdown string suitable for posting as a GitHub issue comment.
@@ -2343,25 +2479,42 @@ def format_diagnostics_markdown(packets, diags):
             lines.append(
                 f"| #{pkt.frame} | {pkt.timestamp:.3f}s | "
                 f"{tags} | {pkt.annotation} |")
-        # Annotator diagnostics (no frame/timestamp)
+        # Annotator diagnostics with structured fields
         for d in diags:
-            if d.startswith("ABSENCE:"):
-                lines.append(f"| - | - | - | :warning: {d} |")
-            elif d.startswith("INFO:") or d.startswith("NOTE:"):
+            # Build frame/timestamp/tags columns from Diagnostic
+            frame_col = f"#{d.frame}" if hasattr(d, "frame") \
+                and d.frame is not None else "-"
+            ts_col = f"{d.timestamp:.3f}s" if hasattr(d, "timestamp") \
+                and d.timestamp is not None else "-"
+            d_tags = d.tags if hasattr(d, "tags") and d.tags else []
+            tags_col = ", ".join(f"`{t}`" for t in d_tags) \
+                if d_tags else "-"
+
+            msg = str(d)
+            if msg.startswith("ABSENCE:"):
                 lines.append(
-                    f"| - | - | - | :information_source: {d} |")
-            elif "\n" in d:
+                    f"| {frame_col} | {ts_col} | {tags_col} | "
+                    f":warning: {msg} |")
+            elif msg.startswith("INFO:") or msg.startswith("NOTE:"):
+                lines.append(
+                    f"| {frame_col} | {ts_col} | {tags_col} | "
+                    f":information_source: {msg} |")
+            elif "\n" in msg:
                 # Multi-line diagnostics (e.g. STATE tables): use
                 # first line in table, rest as detail below
-                first, rest = d.split("\n", 1)
-                lines.append(f"| - | - | - | {first} |")
+                first, rest = msg.split("\n", 1)
+                lines.append(
+                    f"| {frame_col} | {ts_col} | {tags_col} | "
+                    f"{first} |")
                 lines.append("")
                 lines.append("```")
                 lines.append(rest)
                 lines.append("```")
                 lines.append("")
             else:
-                lines.append(f"| - | - | - | {d} |")
+                lines.append(
+                    f"| {frame_col} | {ts_col} | {tags_col} | "
+                    f"{msg} |")
         lines.append("")
     else:
         lines.append("No diagnostics generated.")
