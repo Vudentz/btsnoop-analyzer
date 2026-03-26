@@ -2221,15 +2221,52 @@ def prefilter(text, focus, max_chars=24000, packets=None, diags=None):
     return combined, all_diags
 
 
-def format_markdown(packets, diags, focus):
-    """Format annotation results as a GitHub-comment-ready markdown block.
+def format_filter_markdown(packets, focus, trace_chars, max_chars):
+    """Format prefilter summary as Step 2: Filter.
+
+    Shows packet counts, time span, budget usage, and key/context/skipped
+    breakdown.
+
+    Args:
+        packets: List of Packet objects (already annotated).
+        focus: Focus area string.
+        trace_chars: Number of characters in the prefiltered trace.
+        max_chars: Character budget limit.
+
+    Returns:
+        Markdown string suitable for posting as a GitHub issue comment.
+    """
+    key_pkts = [p for p in packets if p.priority == "key"]
+    ctx_pkts = [p for p in packets if p.priority == "context"]
+    skip_count = len(packets) - len(key_pkts) - len(ctx_pkts)
+
+    lines = ["## Step 2: Filter", ""]
+    lines.append(f"**Focus:** {focus}")
+    lines.append(f"**Total packets:** {len(packets)}")
+    lines.append(f"**Key:** {len(key_pkts)} | "
+                 f"**Context:** {len(ctx_pkts)} | "
+                 f"**Skipped:** {skip_count}")
+    if packets:
+        span = packets[-1].timestamp - packets[0].timestamp
+        lines.append(f"**Time span:** {packets[0].timestamp:.3f}s - "
+                     f"{packets[-1].timestamp:.3f}s ({span:.1f}s)")
+    if max_chars > 0:
+        pct = trace_chars * 100 // max_chars
+        lines.append(f"**Budget:** {trace_chars:,} / {max_chars:,} chars "
+                     f"({pct}% used)")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_annotation_markdown(packets, focus):
+    """Format annotation results as Step 3: Key Frames table.
 
     Produces a key frames table with timestamps, frame numbers, and
     semantic labels that can be referenced in the analysis step.
 
     Args:
         packets: List of Packet objects (already annotated).
-        diags: List of diagnostic strings from the annotator.
         focus: Focus area string.
 
     Returns:
@@ -2238,7 +2275,7 @@ def format_markdown(packets, diags, focus):
     key_pkts = [p for p in packets if p.priority == "key"]
     ctx_pkts = [p for p in packets if p.priority == "context"]
 
-    lines = ["## Step 2: Annotation", ""]
+    lines = ["## Step 3: Annotation", ""]
     lines.append(f"**Focus:** {focus}")
     lines.append(f"**Packets:** {len(packets)} total, "
                  f"{len(key_pkts)} key, {len(ctx_pkts)} context, "
@@ -2266,13 +2303,29 @@ def format_markdown(packets, diags, focus):
                          f"*... and {len(key_pkts) - 50} more* |")
         lines.append("")
 
-    # Diagnostics table: graceful disconnects + annotator diagnostics
+    return "\n".join(lines)
+
+
+def format_diagnostics_markdown(packets, diags):
+    """Format diagnostics as Step 4: Diagnostics table.
+
+    Includes graceful disconnect packets as rows with frame/timestamp,
+    and annotator diagnostics (STREAM, CONFIG, STATE, ABSENCE, NOTE,
+    INFO) without frame/timestamp.
+
+    Args:
+        packets: List of Packet objects (already annotated).
+        diags: List of diagnostic strings from the annotator.
+
+    Returns:
+        Markdown string suitable for posting as a GitHub issue comment.
+    """
+    lines = ["## Step 4: Diagnostics", ""]
+
     graceful = [p for p in packets
                 if p.annotation and "Graceful disconnect" in p.annotation]
     has_diags = graceful or diags
     if has_diags:
-        lines.append("### Diagnostics")
-        lines.append("")
         lines.append("| # | Timestamp | Tags | Diagnostic |")
         lines.append("|--:|----------:|------|------------|")
         # Graceful disconnects as diagnostic rows
@@ -2301,8 +2354,32 @@ def format_markdown(packets, diags, focus):
             else:
                 lines.append(f"| - | - | - | {d} |")
         lines.append("")
+    else:
+        lines.append("No diagnostics generated.")
+        lines.append("")
 
     return "\n".join(lines)
+
+
+def format_markdown(packets, diags, focus):
+    """Format annotation + diagnostics as markdown (backward compat).
+
+    Combines format_annotation_markdown() and
+    format_diagnostics_markdown() into a single output.
+
+    Args:
+        packets: List of Packet objects (already annotated).
+        diags: List of diagnostic strings from the annotator.
+        focus: Focus area string.
+
+    Returns:
+        Markdown string suitable for posting as a GitHub issue comment.
+    """
+    parts = [format_annotation_markdown(packets, focus)]
+    diag_md = format_diagnostics_markdown(packets, diags)
+    if diag_md.strip():
+        parts.append(diag_md)
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

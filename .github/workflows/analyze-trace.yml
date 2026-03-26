@@ -183,6 +183,20 @@ jobs:
               body: detect
             });
 
+      - name: Post filter comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const filter = fs.readFileSync('results/filter.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: filter
+            });
+
       - name: Post annotation comment
         if: success()
         uses: actions/github-script@v7
@@ -195,6 +209,20 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body: annotate
+            });
+
+      - name: Post diagnostics comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const diagnose = fs.readFileSync('results/diagnose.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: diagnose
             });
 
       - name: Post analysis comment

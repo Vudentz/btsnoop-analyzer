@@ -37,7 +37,9 @@ from detect import detect, clip_for_focus, select_focus
 from detect import format_markdown as detect_markdown
 from templates import template_instructions
 from annotate import prefilter, annotate_trace
-from annotate import format_markdown as annotate_markdown
+from annotate import format_annotation_markdown as annotate_markdown
+from annotate import format_diagnostics_markdown as diagnostics_markdown
+from annotate import format_filter_markdown as filter_markdown
 
 
 def log(msg):
@@ -632,9 +634,11 @@ def main():
         detect_results, focus, auto_detected_focus=auto_detected_focus)
     write_step("detect", detect_md)
 
-    # --- Step 2: Annotation ---
+    # --- Step 2: Filter ---
+    # --- Step 3: Annotation ---
     annotated_packets = []
     annotator_diags = []
+    filter_trace_chars = 0
 
     # Clip the log to the relevant section for the focus area.
     # Use the annotator-based prefilter when available — it does
@@ -654,6 +658,7 @@ def main():
                 packets=annotated_packets, diags=annotator_diags)
             original_len = len(decoded)
             decoded = prefiltered
+            filter_trace_chars = len(decoded)
             absence_errors = absence_errors + annotator_diags
             log(f"Prefiltered trace: {len(decoded)} chars "
                 f"({len(decoded) * 100 // original_len}% of "
@@ -666,22 +671,33 @@ def main():
             if clipped != decoded:
                 original_len = len(decoded)
                 decoded = clipped
+                filter_trace_chars = len(decoded)
                 log(f"Clipped trace: {len(decoded)} chars "
                     f"({len(decoded) * 100 // original_len}% of "
                     f"{original_len} chars)")
             else:
                 decoded = truncate_for_context(decoded,
                                                max_chars=limits["trace"])
+                filter_trace_chars = len(decoded)
     else:
         decoded = truncate_for_context(decoded,
                                         max_chars=limits["trace"])
+        filter_trace_chars = len(decoded)
 
-    # Write annotation comment
-    annotate_md = annotate_markdown(
-        annotated_packets, annotator_diags, focus)
+    # Write filter comment (Step 2)
+    filter_md = filter_markdown(
+        annotated_packets, focus, filter_trace_chars, limits["trace"])
+    write_step("filter", filter_md)
+
+    # Write annotation comment (Step 3)
+    annotate_md = annotate_markdown(annotated_packets, focus)
     write_step("annotate", annotate_md)
 
-    # --- Step 3: LLM Analysis ---
+    # Write diagnostics comment (Step 4)
+    diagnose_md = diagnostics_markdown(annotated_packets, annotator_diags)
+    write_step("diagnose", diagnose_md)
+
+    # --- Step 5: LLM Analysis ---
     # Load docs (focus-specific when available)
     docs = load_docs(args.docs_path, focus=focus)
     docs = truncate_for_context(docs, max_chars=limits["docs"])
@@ -700,9 +716,9 @@ def main():
     provider_fn = PROVIDERS[args.provider]
     analysis = provider_fn(system_prompt, user_prompt, args.model)
 
-    # Wrap in a "Step 3" heading for consistency when using --output-dir
+    # Wrap in a "Step 5" heading for consistency when using --output-dir
     if args.output_dir:
-        analysis = f"## Step 3: LLM Analysis\n\n{analysis}"
+        analysis = f"## Step 5: LLM Analysis\n\n{analysis}"
 
     # Output
     if args.output_dir:
