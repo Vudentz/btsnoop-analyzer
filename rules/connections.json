@@ -1,0 +1,30 @@
+{
+  "name": "connections",
+  "focus": "Connection issues",
+
+  "detect": {
+    "activity": [
+      "Connection Complete",
+      "LE Connection Complete",
+      "Enhanced LE Connection Complete",
+      "Disconnect"
+    ],
+    "errors": [
+      "Connection Complete.*Status:(?!.*Success)",
+      "LE Connection Complete.*Status:(?!.*Success)",
+      "Disconnect.*Reason:",
+      "Connection Timeout",
+      "Connection Failed"
+    ]
+  },
+
+  "annotate": {
+    "hooks": [
+      "disconnect_classification"
+    ]
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}

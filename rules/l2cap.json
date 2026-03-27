@@ -1,0 +1,27 @@
+{
+  "name": "l2cap",
+  "focus": "L2CAP channel issues",
+
+  "detect": {
+    "activity": [
+      "L2CAP:.*Connection Request",
+      "L2CAP:.*Connection Response",
+      "LE Connection Request",
+      "LE Connection Response",
+      "PSM:"
+    ],
+    "errors": [
+      "Connection Response.*Result:(?!.*Success)",
+      "Parameters rejected",
+      "Command Reject"
+    ]
+  },
+
+  "annotate": {
+    "hooks": []
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}

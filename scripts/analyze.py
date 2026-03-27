@@ -55,10 +55,11 @@ import urllib.error
 from detect import detect, clip_for_focus, select_focus
 from detect import format_markdown as detect_markdown
 from templates import template_instructions
-from annotate import prefilter, annotate_trace
+from annotate import annotate_trace
 from annotate import format_annotation_markdown as annotate_markdown
-from annotate import format_diagnostics_markdown as diagnostics_markdown
-from annotate import format_filter_markdown as filter_markdown
+from prefilter import prefilter
+from prefilter import format_filter_markdown as filter_markdown
+from diagnose import format_diagnostics_markdown as diagnostics_markdown
 
 
 def log(msg):

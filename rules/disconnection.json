@@ -1,0 +1,14 @@
+{
+  "name": "disconnection",
+  "focus": "Disconnection analysis",
+
+  "annotate": {
+    "hooks": [
+      "disconnect_classification"
+    ]
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}

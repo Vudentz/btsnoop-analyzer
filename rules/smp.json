@@ -1,0 +1,26 @@
+{
+  "name": "smp",
+  "focus": "Pairing / Security",
+
+  "detect": {
+    "activity": [
+      "Pairing Request",
+      "Pairing Response",
+      "Pairing Public Key",
+      "DHKey Check",
+      "Encryption Change"
+    ],
+    "errors": [
+      "Pairing Failed",
+      "Encryption Change.*Status:(?!.*Success)"
+    ]
+  },
+
+  "annotate": {
+    "hooks": []
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "hci_init",
+  "focus": "Controller enumeration",
+
+  "detect": {
+    "activity": [
+      "Read Local Version",
+      "Read BD ADDR",
+      "Read Buffer Size",
+      "Set Event Mask",
+      "Read Local Supported",
+      "LE Set Event Mask",
+      "LE Read Buffer Size"
+    ],
+    "errors": [
+      "Command Status.*Status:(?!.*Success)",
+      "Command Complete.*Status:(?!.*Success)"
+    ]
+  },
+
+  "annotate": {
+    "hooks": []
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}

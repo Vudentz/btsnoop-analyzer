@@ -1,0 +1,23 @@
+{
+  "name": "advertising",
+  "focus": "Advertising / Scanning",
+
+  "detect": {
+    "activity": [
+      "Advertising Report",
+      "Set Extended Adv",
+      "Set Advertising",
+      "Adv Enable",
+      "Periodic Advertising"
+    ],
+    "errors": []
+  },
+
+  "annotate": {
+    "hooks": []
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}

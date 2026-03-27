@@ -25,6 +25,8 @@ import re
 import sys
 from dataclasses import dataclass, field
 
+from rules import load_rules as _load_rules
+
 
 # ---------------------------------------------------------------------------
 # btmon packet boundary detection
@@ -81,182 +83,47 @@ class AreaDef:
     absence_checks: list = field(default_factory=list)
 
 
-AREAS = [
-    AreaDef(
-        name="a2dp",
-        focus="Audio / A2DP",
-        activity=[
-            r"AVDTP:",
-            r"Media Codec:",
-            r"PSM: 25",
-        ],
-        errors=[
-            r"Response Reject",
-            r"Error code:",
-            r"AVDTP:.*Abort",
-        ],
-    ),
-    AreaDef(
-        name="hfp",
-        focus="Audio / HFP",
-        activity=[
-            r"RFCOMM:",
-            r"PSM: 3\b",
-            r"Setup Synchronous",
-            r"Enhanced Setup Synchronous",
-            r"Synchronous Connection Complete",
-        ],
-        errors=[
-            r"Synchronous Connection Complete.*Status:(?!.*Success)",
-            r"Connection Rejected",
-            r"SCO Offset Rejected",
-            r"SCO Interval Rejected",
-        ],
-    ),
-    AreaDef(
-        name="le_audio",
-        focus="Audio / LE Audio",
-        activity=[
-            # Unicast (CIS) patterns -- decoded GATT names
-            r"ASE Control Point",
-            r"ASE ID:",
-            r"Set CIG Parameters",
-            r"Create CIS",
-            r"CIS Established",
-            r"Setup ISO Data Path",
-            # Unicast (CIS) patterns -- raw HCI event names
-            # (present even without GATT discovery)
-            r"Connected Isochronous Stream",
-            r"Setup Isochrono",
-            r"Isochronous Data Path",
-            r"LE-CIS:",
-            # Broadcast (BIG) patterns — btmon uses both abbreviated
-            # ("BIG Info") and full ("Broadcast Isochronous Group Info")
-            # forms depending on context.
-            r"Basic Audio Announcement",
-            r"Create BIG",
-            r"BIG Complete",
-            r"(?:BIG|Isochronous Group) Create Sync",
-            r"(?:BIG|Isochronous Group) Sync Established",
-            r"(?:BIG Info|Isochronous Group Info) Advertising Report",
-            # BASS / PA patterns (broadcast receiver flow)
-            r"(?:Add|Modify|Remove) Source",
-            r"Periodic Advertising Create Sync",
-            r"Periodic Advertising Sync Established",
-            r"Periodic Advertising Sync Transfer Received",
-            r"Periodic Advertising Sync Transfer Parameters",
-            r"Periodic Advertising Report",
-        ],
-        errors=[
-            r"CIS Established.*Status:(?!.*Success)",
-            r"Isochronous Stream Established.*Status:(?!.*Success)",
-            r"(?:BIG|Isochronous Group) Sync Established.*Status:(?!.*Success)",
-            r"(?:BIG|Isochronous Group) Sync Lost",
-            r"(?:BIG|Isochronous Group) Terminate",
-            r"State:.*Releasing",
-        ],
-        absence_checks=[
-            AbsenceCheck(
-                prerequisite=r"Periodic Advertising Sync (?:Established|Transfer Received)",
-                expected=r"(?:BIG Info|Isochronous Group Info) Advertising Report",
-                message="PA synced but BIG Info never received -- "
-                        "BIG does not exist on this PA train",
-            ),
-            AbsenceCheck(
-                prerequisite=r"(?:BIG Info|Isochronous Group Info) Advertising Report",
-                expected=r"(?:BIG|Isochronous Group) Create Sync",
-                message="BIG Info received but host never sent "
-                        "BIG Create Sync",
-            ),
-            AbsenceCheck(
-                prerequisite=r"(?:BIG|Isochronous Group) Create Sync",
-                expected=r"(?:BIG|Isochronous Group) Sync Established",
-                message="BIG Create Sync sent but BIG Sync never "
-                        "established",
-            ),
-        ],
-    ),
-    AreaDef(
-        name="connections",
-        focus="Connection issues",
-        activity=[
-            r"Connection Complete",
-            r"LE Connection Complete",
-            r"Enhanced LE Connection Complete",
-            r"Disconnect",
-        ],
-        errors=[
-            r"Connection Complete.*Status:(?!.*Success)",
-            r"LE Connection Complete.*Status:(?!.*Success)",
-            r"Disconnect.*Reason:",
-            r"Connection Timeout",
-            r"Connection Failed",
-        ],
-    ),
-    AreaDef(
-        name="smp",
-        focus="Pairing / Security",
-        activity=[
-            r"Pairing Request",
-            r"Pairing Response",
-            r"Pairing Public Key",
-            r"DHKey Check",
-            r"Encryption Change",
-        ],
-        errors=[
-            r"Pairing Failed",
-            r"Encryption Change.*Status:(?!.*Success)",
-        ],
-    ),
-    AreaDef(
-        name="l2cap",
-        focus="L2CAP channel issues",
-        activity=[
-            r"L2CAP:.*Connection Request",
-            r"L2CAP:.*Connection Response",
-            r"LE Connection Request",
-            r"LE Connection Response",
-            r"PSM:",
-        ],
-        errors=[
-            r"Connection Response.*Result:(?!.*Success)",
-            r"Parameters rejected",
-            r"Command Reject",
-        ],
-    ),
-    AreaDef(
-        name="advertising",
-        focus="Advertising / Scanning",
-        activity=[
-            r"Advertising Report",
-            r"Set Extended Adv",
-            r"Set Advertising",
-            r"Adv Enable",
-            r"Periodic Advertising",
-        ],
-        errors=[
-            # Advertising rarely has explicit errors; scan timeout is
-            # the main failure mode but isn't logged as an error.
-        ],
-    ),
-    AreaDef(
-        name="hci_init",
-        focus="Controller enumeration",
-        activity=[
-            r"Read Local Version",
-            r"Read BD ADDR",
-            r"Read Buffer Size",
-            r"Set Event Mask",
-            r"Read Local Supported",
-            r"LE Set Event Mask",
-            r"LE Read Buffer Size",
-        ],
-        errors=[
-            r"Command Status.*Status:(?!.*Success)",
-            r"Command Complete.*Status:(?!.*Success)",
-        ],
-    ),
-]
+def _build_areas():
+    """Build AREAS list from JSON rule files.
+
+    Converts each RuleSet with a ``detect`` section into an AreaDef
+    compatible with the existing detection API.  RuleSets without
+    detect patterns (e.g. disconnection) are skipped — they are
+    annotation-only areas.
+    """
+    areas = []
+    for rs in _load_rules():
+        if not rs.detect_activity and not rs.detect_errors \
+                and not rs.detect_absence_checks:
+            continue
+        areas.append(AreaDef(
+            name=rs.name,
+            focus=rs.focus,
+            activity=[p.pattern for p in rs.detect_activity],
+            errors=[p.pattern for p in rs.detect_errors],
+            absence_checks=[
+                AbsenceCheck(
+                    prerequisite=ac.prerequisite,
+                    expected=ac.expected,
+                    message=ac.message,
+                )
+                for ac in rs.detect_absence_checks
+            ],
+        ))
+    return areas
+
+
+AREAS = _build_areas()
+
+# Pre-compiled patterns indexed by area name, built from rule sets.
+# Avoids re.compile() on every detect() call.
+_COMPILED = {}
+for _rs in _load_rules():
+    if _rs.detect_activity or _rs.detect_errors:
+        _COMPILED[_rs.name] = (
+            _rs.detect_activity,   # list of compiled re.Pattern
+            _rs.detect_errors,     # list of compiled re.Pattern
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -346,9 +213,13 @@ def detect(text):
     for area_def in AREAS:
         det = DetectedArea(area=area_def)
 
-        # Compile patterns once per area
-        act_patterns = [re.compile(p) for p in area_def.activity]
-        err_patterns = [re.compile(p) for p in area_def.errors]
+        # Use pre-compiled patterns from rule sets
+        compiled = _COMPILED.get(area_def.name)
+        if compiled:
+            act_patterns, err_patterns = compiled
+        else:
+            act_patterns = [re.compile(p) for p in area_def.activity]
+            err_patterns = [re.compile(p) for p in area_def.errors]
 
         for i, line in enumerate(lines):
             if i in skip:

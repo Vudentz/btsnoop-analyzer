@@ -1,0 +1,28 @@
+{
+  "name": "hfp",
+  "focus": "Audio / HFP",
+
+  "detect": {
+    "activity": [
+      "RFCOMM:",
+      "PSM: 3\\b",
+      "Setup Synchronous",
+      "Enhanced Setup Synchronous",
+      "Synchronous Connection Complete"
+    ],
+    "errors": [
+      "Synchronous Connection Complete.*Status:(?!.*Success)",
+      "Connection Rejected",
+      "SCO Offset Rejected",
+      "SCO Interval Rejected"
+    ]
+  },
+
+  "annotate": {
+    "hooks": []
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}

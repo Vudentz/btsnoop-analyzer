@@ -1,0 +1,70 @@
+{
+  "name": "le_audio",
+  "focus": "Audio / LE Audio",
+
+  "detect": {
+    "activity": [
+      "ASE Control Point",
+      "ASE ID:",
+      "Set CIG Parameters",
+      "Create CIS",
+      "CIS Established",
+      "Setup ISO Data Path",
+      "Connected Isochronous Stream",
+      "Setup Isochrono",
+      "Isochronous Data Path",
+      "LE-CIS:",
+      "Basic Audio Announcement",
+      "Create BIG",
+      "BIG Complete",
+      "(?:BIG|Isochronous Group) Create Sync",
+      "(?:BIG|Isochronous Group) Sync Established",
+      "(?:BIG Info|Isochronous Group Info) Advertising Report",
+      "(?:Add|Modify|Remove) Source",
+      "Periodic Advertising Create Sync",
+      "Periodic Advertising Sync Established",
+      "Periodic Advertising Sync Transfer Received",
+      "Periodic Advertising Sync Transfer Parameters",
+      "Periodic Advertising Report"
+    ],
+    "errors": [
+      "CIS Established.*Status:(?!.*Success)",
+      "Isochronous Stream Established.*Status:(?!.*Success)",
+      "(?:BIG|Isochronous Group) Sync Established.*Status:(?!.*Success)",
+      "(?:BIG|Isochronous Group) Sync Lost",
+      "(?:BIG|Isochronous Group) Terminate",
+      "State:.*Releasing"
+    ],
+    "absence_checks": [
+      {
+        "prerequisite": "Periodic Advertising Sync (?:Established|Transfer Received)",
+        "expected": "(?:BIG Info|Isochronous Group Info) Advertising Report",
+        "message": "PA synced but BIG Info never received -- BIG does not exist on this PA train"
+      },
+      {
+        "prerequisite": "(?:BIG Info|Isochronous Group Info) Advertising Report",
+        "expected": "(?:BIG|Isochronous Group) Create Sync",
+        "message": "BIG Info received but host never sent BIG Create Sync"
+      },
+      {
+        "prerequisite": "(?:BIG|Isochronous Group) Create Sync",
+        "expected": "(?:BIG|Isochronous Group) Sync Established",
+        "message": "BIG Create Sync sent but BIG Sync never established"
+      }
+    ]
+  },
+
+  "annotate": {
+    "hooks": [
+      "ase_state_machine",
+      "mgmt_restart_detection",
+      "pa_report_dedup",
+      "big_info_dedup",
+      "iso_data_sampling"
+    ]
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}

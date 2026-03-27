@@ -1,0 +1,28 @@
+{
+  "name": "a2dp",
+  "focus": "Audio / A2DP",
+
+  "detect": {
+    "activity": [
+      "AVDTP:",
+      "Media Codec:",
+      "PSM: 25"
+    ],
+    "errors": [
+      "Response Reject",
+      "Error code:",
+      "AVDTP:.*Abort"
+    ]
+  },
+
+  "annotate": {
+    "hooks": [
+      "avdtp_state_machine",
+      "media_data_sampling"
+    ]
+  },
+
+  "diagnose": {
+    "hooks": []
+  }
+}
