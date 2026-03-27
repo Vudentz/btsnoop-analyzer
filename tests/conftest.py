@@ -23,3 +23,9 @@ def a2dp_text():
 def broadcast_text():
     """LE Audio broadcast receiver trace excerpt (PAST + PA reports)."""
     return (FIXTURES_DIR / "broadcast.txt").read_text()
+
+
+@pytest.fixture
+def broadcast_restart_text():
+    """LE Audio broadcast trace with daemon restarts (MGMT Close/Open)."""
+    return (FIXTURES_DIR / "broadcast_restart.txt").read_text()

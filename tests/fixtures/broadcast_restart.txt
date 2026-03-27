@@ -1,0 +1,97 @@
+Bluetooth monitor ver 5.86
+@ MGMT Open: bluetoothd (privileged) version 1.23             {0x0001} 0.412691
+@ MGMT Close: bluetoothd                                      {0x0001} 12.826814
+@ MGMT Open: bluetoothd (privileged) version 1.23             {0x0001} 14.957075
+@ MGMT Close: btmgmt                                          {0x0002} 50.000000
+@ MGMT Open: btmgmt (privileged) version 1.23                 {0x0002} 50.500000
+@ MGMT Close: bluetoothd                                      {0x0001} 85.600000
+@ MGMT Open: bluetoothd (privileged) version 1.23             {0x0001} 86.252000
+> HCI Event: LE Meta Event (0x3e) plen 31                   #1 [hci0] 98.676000
+      LE Enhanced Connection Complete (0x0a)
+        Status: Success (0x00)
+        Handle: 2048
+        Role: Peripheral (0x01)
+        Peer address type: Public (0x00)
+        Peer address: 84:D1:C1:0A:36:FF (Intel Corporate)
+        Local resolvable private address: 00:00:00:00:00:00 (Non-Resolvable)
+        Peer resolvable private address: 00:00:00:00:00:00 (Non-Resolvable)
+        Connection interval: 30.00 msec (0x0018)
+        Connection latency: 0 (0x0000)
+        Supervision timeout: 9600 msec (0x03c0)
+        Central clock accuracy: 0x01
+> HCI Event: Command Complete (0x0e) plen 6              #471 [hci0] 352.582000
+      LE Periodic Advertising Sync Transfer Parameters (0x08|0x005c) ncmd 1
+        Status: Success (0x00)
+        Connection handle: 0
+> HCI Event: LE Meta Event (0x3e) plen 20                #474 [hci0] 352.587000
+      LE Periodic Advertising Sync Transfer Received (0x18)
+        Status: Success (0x00)
+        Handle: 2048
+        Connection handle: 2048
+        Service data: 0x0200
+        Sync handle: 64
+        SID: 0x01
+        Address type:: Random (0x01)
+        Address:: 6C:58:08:7B:90:96 (Resolvable)
+          Identity type: Random (0x01)
+          Identity: 84:D1:C1:0A:36:FF (Reserved)
+        PHY:: LE 2M (0x02)
+        Periodic advertising Interval: 240.000
+        Accuracy: 0.3125 msec (0x0001)
+> HCI Event: LE Meta Event (0x3e) plen 57                #476 [hci0] 352.673000
+      LE Periodic Advertising Report (0x0f)
+        Sync handle: 64
+        TX power: 127 dbm (0x7f)
+        RSSI: -33 dBm (0xdf)
+        CTE Type: No Constant Tone Extension (0xff)
+        Data status: Complete
+        Data length: 49
+        Service Data: Basic Audio Announcement (0x1851)
+          Presentation Delay: 40000
+          Number of Subgroups: 1
+            Subgroup #0:
+            Number of BIS(s): 2
+            Codec: LC3 (0x06)
+            Codec Specific Configuration: Sampling Frequency: 48 Khz (0x08)
+            Codec Specific Configuration: Frame Duration: 10 ms (0x01)
+            Codec Specific Configuration: Frame Length: 120 (0x0078)
+> HCI Event: LE Meta Event (0x3e) plen 24                #480 [hci0] 352.675000
+      LE Broadcast Isochronous Group Info Advertising Report (0x22)
+        Sync handle: 64
+        Number of BIS: 2
+        NSE: 4
+        ISO interval: 10.00 msec (0x0008)
+        BN: 1
+        PTO: 0
+        IRC: 4
+        Max PDU: 120
+        SDU interval: 10000
+        Max SDU: 120
+        PHY: LE 2M (0x02)
+        Framing: Unframed (0x00)
+        Encryption: Not encrypted (0x00)
+< HCI Command: LE Broadcast Isochronous Group Create Sync (0x08|0x006b) plen 25 #481 [hci0] 353.744000
+        BIG handle: 0x00
+        Sync handle: 0x0040
+        Encryption: Unencrypted (0x00)
+        Broadcast code[16]: 0000000000000000
+        MSE: 0x00
+        BIG sync timeout: 1000 msec (0x0064)
+        Number of BIS: 2
+        BIS[0]: 0x01
+        BIS[1]: 0x02
+> HCI Event: LE Meta Event (0x3e) plen 23                #482 [hci0] 353.880000
+      LE Broadcast Isochronous Group Sync Established (0x1d)
+        Status: Success (0x00)
+        BIG handle: 0x00
+        Transport latency: 10000 usec (0x002710)
+        NSE: 4
+        BN: 1
+        PTO: 0
+        IRC: 4
+        Max PDU: 120
+        ISO interval: 10.00 msec (0x0008)
+        Connection handle: 2560
+        Connection handle: 2561
+@ MGMT Close: bluetoothd                                      {0x0001} 431.170000
+@ MGMT Open: bluetoothd (privileged) version 1.23             {0x0001} 431.225000

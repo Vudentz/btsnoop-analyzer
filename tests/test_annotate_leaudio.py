@@ -184,3 +184,87 @@ class TestBroadcastAnnotation:
         for p in tagged:
             assert p.priority == "key", \
                 f"Expected key priority for {p.tags}, got {p.priority}"
+
+
+class TestDaemonRestartDetection:
+    """Daemon restart detection via MGMT Close/Open cycles (issue #5)."""
+
+    def _annotate(self, text):
+        packets, diags, found = annotate_trace(text, "Audio / LE Audio")
+        return packets, diags, found
+
+    def test_annotator_found(self, broadcast_restart_text):
+        _, _, found = self._annotate(broadcast_restart_text)
+        assert found
+
+    def test_restart_count_diagnostic(self, broadcast_restart_text):
+        """Should report exactly 3 bluetoothd restarts (Close/Open pairs)."""
+        _, diags, _ = self._annotate(broadcast_restart_text)
+        restart_diags = [d for d in diags if "restarted" in str(d)]
+        assert len(restart_diags) == 1, f"Expected 1 restart diagnostic, got {restart_diags}"
+        assert "3 time(s)" in str(restart_diags[0])
+
+    def test_btmgmt_not_counted(self, broadcast_restart_text):
+        """btmgmt Close/Open should NOT be counted as a daemon restart."""
+        _, diags, _ = self._annotate(broadcast_restart_text)
+        restart_diags = [d for d in diags if "restarted" in str(d)]
+        # Only bluetoothd restarts counted — btmgmt pair is ignored
+        assert "3 time(s)" in str(restart_diags[0]), \
+            "btmgmt restart was incorrectly counted"
+
+    def test_mgmt_packets_tagged(self, broadcast_restart_text):
+        """MGMT Close/Open packets for bluetoothd should be tagged."""
+        packets, _, _ = self._annotate(broadcast_restart_text)
+        mgmt_pkts = [p for p in packets if "MGMT" in p.tags]
+        # 3 restarts = 6 tagged packets (3 Close + 3 Open)
+        assert len(mgmt_pkts) == 6, \
+            f"Expected 6 MGMT-tagged packets, got {len(mgmt_pkts)}"
+
+    def test_mgmt_close_annotation(self, broadcast_restart_text):
+        """MGMT Close packets should be annotated as daemon restart."""
+        packets, _, _ = self._annotate(broadcast_restart_text)
+        close_pkts = [p for p in packets
+                      if "MGMT" in p.tags and "closed" in p.annotation]
+        assert len(close_pkts) == 3
+        for p in close_pkts:
+            assert "daemon restart" in p.annotation
+
+    def test_mgmt_open_annotation(self, broadcast_restart_text):
+        """MGMT Open packets should be annotated as daemon restart."""
+        packets, _, _ = self._annotate(broadcast_restart_text)
+        open_pkts = [p for p in packets
+                     if "MGMT" in p.tags and "reopened" in p.annotation]
+        assert len(open_pkts) == 3
+        for p in open_pkts:
+            assert "daemon restart" in p.annotation
+
+    def test_mgmt_packets_are_key_priority(self, broadcast_restart_text):
+        """MGMT daemon restart packets should have key priority."""
+        packets, _, _ = self._annotate(broadcast_restart_text)
+        mgmt_pkts = [p for p in packets if "MGMT" in p.tags]
+        for p in mgmt_pkts:
+            assert p.priority == "key", \
+                f"MGMT packet should be key, got {p.priority}: {p.annotation}"
+
+    def test_btmgmt_not_tagged(self, broadcast_restart_text):
+        """btmgmt MGMT Close/Open should NOT be tagged."""
+        packets, _, _ = self._annotate(broadcast_restart_text)
+        mgmt_pkts = [p for p in packets if "MGMT" in p.tags]
+        for p in mgmt_pkts:
+            assert "btmgmt" not in p.summary, \
+                f"btmgmt packet should not be MGMT-tagged: {p.summary}"
+
+    def test_broadcast_flow_alongside_restarts(self, broadcast_restart_text):
+        """Full broadcast flow should still be detected alongside restarts."""
+        packets, diags, _ = self._annotate(broadcast_restart_text)
+        pa_pkts = [p for p in packets if "PA" in p.tags]
+        assert len(pa_pkts) >= 2, "PA packets should still be detected"
+        big_pkts = [p for p in packets if "BIG" in p.tags]
+        assert len(big_pkts) >= 2, "BIG packets should still be detected"
+
+    def test_no_big_info_absence_with_big_present(self, broadcast_restart_text):
+        """Should NOT flag BIG Info absence when BIG Info is in trace."""
+        _, diags, _ = self._annotate(broadcast_restart_text)
+        absence = [d for d in diags if "ABSENCE" in str(d) and "BIG Info" in str(d)]
+        assert len(absence) == 0, \
+            f"BIG Info absence should not be flagged: {absence}"
