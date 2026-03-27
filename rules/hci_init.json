@@ -19,7 +19,51 @@
   },
 
   "annotate": {
-    "hooks": []
+    "match_rules": [
+      {
+        "id": "read_local_version",
+        "match": {"field": "full", "contains": "Read Local Version"},
+        "tags": ["HCI"],
+        "annotation": "Read Local Version",
+        "exclusive": true
+      },
+      {
+        "id": "read_bd_addr",
+        "match": {"field": "full", "contains": "Read BD ADDR"},
+        "tags": ["HCI"],
+        "annotation": "Read BD Address",
+        "exclusive": true
+      },
+      {
+        "id": "read_buffer_size",
+        "match": {"field": "full", "contains": "Read Buffer Size"},
+        "tags": ["HCI"],
+        "annotation": "Read Buffer Size",
+        "exclusive": true
+      },
+      {
+        "id": "set_event_mask",
+        "match": {"field": "full", "contains": "Set Event Mask"},
+        "tags": ["HCI"],
+        "annotation": "Set Event Mask",
+        "exclusive": true
+      },
+      {
+        "id": "read_local_supported",
+        "match": {"field": "full", "contains": "Read Local Supported"},
+        "tags": ["HCI"],
+        "annotation": "Read Local Supported Features/Commands",
+        "exclusive": true
+      },
+      {
+        "id": "hci_reset",
+        "match": {"field": "summary", "all_of": ["Reset", "HCI"]},
+        "tags": ["HCI"],
+        "annotation": "HCI Reset",
+        "exclusive": true
+      }
+    ],
+    "hooks": ["hci_init_command_failed"]
   },
 
   "diagnose": {

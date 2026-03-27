@@ -151,6 +151,97 @@ class Annotator:
 
 
 # ---------------------------------------------------------------------------
+# Rule-driven annotator base class
+# ---------------------------------------------------------------------------
+
+class RuleMatchAnnotator(Annotator):
+    """Annotator that evaluates declarative match_rules from JSON.
+
+    Subclasses set ``name`` to match the rule file name.  At init,
+    the matching RuleSet is loaded and compiled match_rules are used
+    for packet annotation.  Subclasses can still override
+    ``annotate_packet()`` to add procedural hooks before/after the
+    declarative rules.
+    """
+
+    def __init__(self):
+        from rules import get_rule_set
+        self._ruleset = get_rule_set(self.name)
+
+    def annotate_packet(self, pkt):
+        """Evaluate match_rules against the packet.
+
+        Hooks (subclass overrides) run first via _run_hooks().
+        If a hook handles the packet, match_rules are skipped.
+        Then declarative match_rules are evaluated in order.
+        """
+        if self._run_hooks(pkt):
+            return
+        self._apply_match_rules(pkt)
+
+    def _run_hooks(self, pkt):
+        """Override in subclasses to run procedural hooks.
+
+        Return True if the packet was fully handled and match_rules
+        should be skipped.
+        """
+        return False
+
+    def _apply_match_rules(self, pkt):
+        """Evaluate declarative match_rules from the RuleSet."""
+        if not self._ruleset:
+            return
+        for rule in self._ruleset.match_rules:
+            # Direction filter
+            if rule.direction and pkt.direction != rule.direction:
+                continue
+            # Match condition
+            if not rule.match.test(pkt):
+                continue
+            # Matched -- extract variables and build annotation
+            annotation = rule.annotation
+            if rule.extracts and annotation:
+                for ext in rule.extracts:
+                    val = ext.extract(pkt)
+                    annotation = annotation.replace(
+                        f"{{{ext.name}}}", val)
+            # Apply tags and priority
+            self._tag(pkt, list(rule.tags), priority=rule.priority,
+                      annotation=annotation)
+            # Set flag if specified
+            if rule.set_flag:
+                setattr(self, rule.set_flag, True)
+            # Exclusive rule stops further evaluation
+            if rule.exclusive:
+                return
+
+    def finalize(self, packets):
+        """Evaluate diagnose sections from the RuleSet.
+
+        Runs flag-based absence checks and conditional notes.
+        Subclasses can extend this by calling super().finalize()
+        and appending their own diagnostics.
+        """
+        diags = []
+        if not self._ruleset:
+            return diags
+
+        # Flag-based absence checks
+        for ac in self._ruleset.diagnose_absence_checks:
+            cond_val = getattr(self, ac.condition_flag, False)
+            missing_val = getattr(self, ac.missing_flag, False)
+            if cond_val and not missing_val:
+                diags.append(Diagnostic(f"ABSENCE: {ac.message}"))
+
+        # Conditional notes
+        for note in self._ruleset.diagnose_notes:
+            if note.evaluate(self):
+                diags.append(Diagnostic(note.format_message(self)))
+
+        return diags
+
+
+# ---------------------------------------------------------------------------
 # LE Audio annotator
 # ---------------------------------------------------------------------------
 
@@ -1648,17 +1739,18 @@ class A2DPAnnotator(Annotator):
 # HFP annotator
 # ---------------------------------------------------------------------------
 
-class HFPAnnotator(Annotator):
+class HFPAnnotator(RuleMatchAnnotator):
     """Annotator for HFP traces (RFCOMM + SCO)."""
 
     name = "hfp"
 
     def __init__(self):
+        super().__init__()
         self.saw_rfcomm = False
         self.saw_sco_setup = False
         self.saw_sco_complete = False
 
-    def annotate_packet(self, pkt):
+    def _run_hooks(self, pkt):
         s = pkt.summary
         body_text = "\n".join(pkt.body)
         full = s + "\n" + body_text
@@ -1677,17 +1769,7 @@ class HFPAnnotator(Annotator):
             else:
                 self._tag(pkt, "RFCOMM",
                           annotation="RFCOMM")
-
-        elif "PSM: 3" in body_text and "PSM: 3 " not in body_text:
-            # PSM 3 = RFCOMM
-            self._tag(pkt, ["L2CAP", "RFCOMM"],
-                      annotation="L2CAP for RFCOMM (PSM 3)")
-
-        elif "Setup Synchronous" in full or \
-                "Enhanced Setup Synchronous" in full:
-            self._tag(pkt, ["SCO", "HCI"],
-                      annotation="SCO/eSCO connection setup")
-            self.saw_sco_setup = True
+            return True
 
         elif "Synchronous Connection Complete" in full:
             status = "Success" if "Success" in body_text else "FAIL"
@@ -1697,39 +1779,27 @@ class HFPAnnotator(Annotator):
             if "Success" not in body_text:
                 self._tag(pkt, "ERROR",
                           annotation="SCO setup FAILED")
-
-        elif "Synchronous Connection Changed" in full:
-            self._tag(pkt, ["SCO", "HCI"],
-                      annotation="SCO parameters changed")
-
-        elif "Connection Complete" in full:
-            status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "HCI",
-                      annotation=f"Connection: {status}")
+            return True
 
         elif "Disconnect" in s and pkt.direction in ("<", ">") \
                 and not pkt.tags:
             self._tag_disconnect(pkt)
+            return True
 
-    def finalize(self, packets):
-        diags = []
-        if self.saw_sco_setup and not self.saw_sco_complete:
-            diags.append(Diagnostic(
-                "ABSENCE: SCO/eSCO setup sent but Synchronous "
-                "Connection Complete never received."))
-        return diags
+        return False
 
 
 # ---------------------------------------------------------------------------
 # SMP annotator
 # ---------------------------------------------------------------------------
 
-class SMPAnnotator(Annotator):
+class SMPAnnotator(RuleMatchAnnotator):
     """Annotator for SMP pairing traces."""
 
     name = "smp"
 
     def __init__(self):
+        super().__init__()
         self.saw_pairing_req = False
         self.saw_pairing_rsp = False
         self.saw_confirm = False
@@ -1737,47 +1807,10 @@ class SMPAnnotator(Annotator):
         self.saw_dhkey = False
         self.saw_encrypt = False
 
-    def annotate_packet(self, pkt):
-        s = pkt.summary
-        body_text = "\n".join(pkt.body)
-        full = s + "\n" + body_text
-
-        if "Pairing Request" in full:
-            self._tag(pkt, "SMP",
-                      annotation="SMP Pairing Request")
-            self.saw_pairing_req = True
-
-        elif "Pairing Response" in full:
-            self._tag(pkt, "SMP",
-                      annotation="SMP Pairing Response")
-            self.saw_pairing_rsp = True
-
-        elif "Pairing Confirm" in full:
-            self._tag(pkt, "SMP",
-                      annotation="SMP Pairing Confirm")
-            self.saw_confirm = True
-
-        elif "Pairing Random" in full:
-            self._tag(pkt, "SMP",
-                      annotation="SMP Pairing Random")
-
-        elif "Pairing Public Key" in full:
-            self._tag(pkt, "SMP",
-                      annotation="SMP Public Key (Secure Connections)")
-            self.saw_pubkey = True
-
-        elif "DHKey Check" in full:
-            self._tag(pkt, "SMP",
-                      annotation="SMP DHKey Check")
-            self.saw_dhkey = True
-
-        elif "Pairing Failed" in full:
-            reason_m = re.search(r"Reason:\s*(.+)", body_text)
-            reason = reason_m.group(1).strip() if reason_m else "?"
-            self._tag(pkt, "SMP",
-                      annotation=f"SMP Pairing FAILED: {reason}")
-
-        elif "Encryption Change" in full:
+    def _run_hooks(self, pkt):
+        full = pkt.summary + "\n" + "\n".join(pkt.body)
+        if "Encryption Change" in full:
+            body_text = "\n".join(pkt.body)
             status = "Success" if "Success" in body_text else "FAIL"
             self._tag(pkt, ["SMP", "HCI"],
                       annotation=f"Encryption change: {status}")
@@ -1785,44 +1818,20 @@ class SMPAnnotator(Annotator):
             if "Success" not in body_text:
                 self._tag(pkt, "ERROR",
                           annotation="Encryption change FAILED")
-
-        elif "Identity Resolving Key" in body_text:
-            self._tag(pkt, "SMP",
-                      annotation="IRK exchanged")
-
-        elif "Long Term Key" in body_text:
-            self._tag(pkt, "SMP",
-                      annotation="LTK exchanged")
-
-        elif "Connection Complete" in full:
-            status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "HCI",
-                      annotation=f"Connection: {status}")
-
-    def finalize(self, packets):
-        diags = []
-        if self.saw_pairing_req and not self.saw_pairing_rsp:
-            diags.append(Diagnostic(
-                "ABSENCE: Pairing Request sent but Pairing Response "
-                "never received -- peer may not support pairing "
-                "or connection was lost."))
-        if self.saw_pairing_rsp and not self.saw_encrypt:
-            diags.append(Diagnostic(
-                "ABSENCE: Pairing completed but Encryption Change "
-                "never received."))
-        return diags
+            return True
+        return False
 
 
 # ---------------------------------------------------------------------------
 # Connections annotator
 # ---------------------------------------------------------------------------
 
-class ConnectionsAnnotator(Annotator):
+class ConnectionsAnnotator(RuleMatchAnnotator):
     """Annotator for connection lifecycle traces."""
 
     name = "connections"
 
-    def annotate_packet(self, pkt):
+    def _run_hooks(self, pkt):
         s = pkt.summary
         body_text = "\n".join(pkt.body)
         full = s + "\n" + body_text
@@ -1838,39 +1847,27 @@ class ConnectionsAnnotator(Annotator):
                       f"{role} {status}")
             if "Success" not in body_text:
                 self._tag(pkt, "ERROR")
+            return True
 
         elif "Disconnect" in s and pkt.direction in ("<", ">"):
             handle_m = re.search(r"Handle:\s*(\d+)", body_text)
             handle = handle_m.group(1) if handle_m else "?"
             self._tag_disconnect(pkt, handle=handle)
+            return True
 
-        elif "Connection Update" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Connection parameters updated")
-
-        elif "Data Length Change" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Data length changed")
-
-        elif "Read Remote Used Features" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Remote features read")
-
-        elif "Connection Timeout" in full or "Connection Failed" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Connection failure/timeout")
+        return False
 
 
 # ---------------------------------------------------------------------------
 # L2CAP annotator
 # ---------------------------------------------------------------------------
 
-class L2CAPAnnotator(Annotator):
+class L2CAPAnnotator(RuleMatchAnnotator):
     """Annotator for L2CAP channel traces."""
 
     name = "l2cap"
 
-    def annotate_packet(self, pkt):
+    def _run_hooks(self, pkt):
         s = pkt.summary
         body_text = "\n".join(pkt.body)
 
@@ -1904,6 +1901,7 @@ class L2CAPAnnotator(Annotator):
             else:
                 self._tag(pkt, "L2CAP",
                           annotation="L2CAP signaling")
+            return True
 
         elif "LE Connection Request" in body_text or \
                 "LE Connection Request" in s:
@@ -1911,136 +1909,81 @@ class L2CAPAnnotator(Annotator):
             psm = psm_m.group(1) if psm_m else "?"
             self._tag(pkt, ["L2CAP", "LE"],
                       annotation=f"LE L2CAP CoC Request PSM={psm}")
+            return True
 
         elif "LE Connection Response" in body_text or \
                 "LE Connection Response" in s:
             self._tag(pkt, ["L2CAP", "LE"],
                       annotation="LE L2CAP CoC Response")
+            return True
 
         elif "PSM:" in body_text and not pkt.tags:
             psm_m = re.search(r"PSM:\s*(\d+)", body_text)
             psm = psm_m.group(1) if psm_m else "?"
             self._tag(pkt, "L2CAP",
                       annotation=f"PSM {psm} referenced")
+            return True
+
+        return False
 
 
 # ---------------------------------------------------------------------------
 # Advertising annotator
 # ---------------------------------------------------------------------------
 
-class AdvertisingAnnotator(Annotator):
+class AdvertisingAnnotator(RuleMatchAnnotator):
     """Annotator for advertising and scanning traces."""
 
     name = "advertising"
-
-    def annotate_packet(self, pkt):
-        s = pkt.summary
-        body_text = "\n".join(pkt.body)
-        full = s + "\n" + body_text
-
-        if "Advertising Report" in full and \
-                "BIG Info" not in full and \
-                "Isochronous Group Info" not in full:
-            addr_m = re.search(r"Address:\s*(\S+)", body_text)
-            addr = addr_m.group(1) if addr_m else ""
-            self._tag(pkt, ["HCI", "LE"],
-                      annotation=f"Advertising report {addr}")
-
-        elif "Set Extended Adv" in full or "Set Advertising" in full:
-            self._tag(pkt, ["HCI", "LE"],
-                      annotation="Advertising configuration")
-
-        elif "Adv Enable" in full or "Advertising Enable" in full:
-            self._tag(pkt, ["HCI", "LE"],
-                      annotation="Advertising enable/disable")
-
-        elif "Periodic Advertising" in full:
-            self._tag(pkt, ["HCI", "LE"],
-                      annotation="Periodic advertising")
-
-        elif "Set Scan" in full or "Extended Scan" in full:
-            self._tag(pkt, ["HCI", "LE"],
-                      annotation="Scan configuration")
 
 
 # ---------------------------------------------------------------------------
 # HCI Init annotator
 # ---------------------------------------------------------------------------
 
-class HCIInitAnnotator(Annotator):
+class HCIInitAnnotator(RuleMatchAnnotator):
     """Annotator for HCI initialization sequence."""
 
     name = "hci_init"
 
     def annotate_packet(self, pkt):
+        """Match declarative rules first; hook handles remainder."""
+        self._apply_match_rules(pkt)
+        if not pkt.tags:
+            self._run_hooks(pkt)
+
+    def _run_hooks(self, pkt):
         s = pkt.summary
-        body_text = "\n".join(pkt.body)
-        full = s + "\n" + body_text
-
-        if "Read Local Version" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Read Local Version")
-
-        elif "Read BD ADDR" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Read BD Address")
-
-        elif "Read Buffer Size" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Read Buffer Size")
-
-        elif "Set Event Mask" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Set Event Mask")
-
-        elif "Read Local Supported" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Read Local Supported Features/Commands")
-
-        elif "Reset" in s and "HCI" in s:
-            self._tag(pkt, "HCI",
-                      annotation="HCI Reset")
-
-        elif "Command Complete" in s or "Command Status" in s:
+        if "Command Complete" in s or "Command Status" in s:
+            body_text = "\n".join(pkt.body)
             if "Status:" in body_text and \
                     "Success" not in body_text:
                 status_m = re.search(r"Status:\s*(.+)", body_text)
                 status = status_m.group(1).strip() if status_m else "?"
                 self._tag(pkt, "HCI",
                           annotation=f"Command failed: {status}")
+                return True
+        return False
 
 
 # ---------------------------------------------------------------------------
 # Disconnection annotator (specialization of connections)
 # ---------------------------------------------------------------------------
 
-class DisconnectionAnnotator(Annotator):
+class DisconnectionAnnotator(RuleMatchAnnotator):
     """Annotator focused on disconnection analysis."""
 
     name = "disconnection"
 
-    def annotate_packet(self, pkt):
+    def _run_hooks(self, pkt):
         s = pkt.summary
-        body_text = "\n".join(pkt.body)
-        full = s + "\n" + body_text
-
         if "Disconnect" in s and pkt.direction in ("<", ">"):
+            body_text = "\n".join(pkt.body)
             handle_m = re.search(r"Handle:\s*(\d+)", body_text)
             handle = handle_m.group(1) if handle_m else "?"
             self._tag_disconnect(pkt, handle=handle)
-
-        elif "Connection Complete" in full:
-            status = "Success" if "Success" in body_text else "FAIL"
-            self._tag(pkt, "HCI",
-                      annotation=f"Connection: {status}")
-
-        elif "Supervision Timeout" in body_text:
-            self._tag(pkt, "HCI",
-                      annotation="Supervision timeout parameter")
-
-        elif "Connection Timeout" in full:
-            self._tag(pkt, "HCI",
-                      annotation="Connection timeout")
+            return True
+        return False
 
 
 # ---------------------------------------------------------------------------

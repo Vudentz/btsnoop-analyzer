@@ -19,9 +19,37 @@
   },
 
   "annotate": {
-    "hooks": [
-      "disconnect_classification"
-    ]
+    "match_rules": [
+      {
+        "id": "conn_update",
+        "match": {"field": "full", "contains": "Connection Update"},
+        "tags": ["HCI"],
+        "annotation": "Connection parameters updated",
+        "exclusive": true
+      },
+      {
+        "id": "data_length_change",
+        "match": {"field": "full", "contains": "Data Length Change"},
+        "tags": ["HCI"],
+        "annotation": "Data length changed",
+        "exclusive": true
+      },
+      {
+        "id": "remote_features",
+        "match": {"field": "full", "contains": "Read Remote Used Features"},
+        "tags": ["HCI"],
+        "annotation": "Remote features read",
+        "exclusive": true
+      },
+      {
+        "id": "conn_timeout_fail",
+        "match": {"field": "full", "any_of": ["Connection Timeout", "Connection Failed"]},
+        "tags": ["HCI"],
+        "annotation": "Connection failure/timeout",
+        "exclusive": true
+      }
+    ],
+    "hooks": ["connections_complete", "disconnect_classification"]
   },
 
   "diagnose": {

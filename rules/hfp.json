@@ -19,10 +19,55 @@
   },
 
   "annotate": {
-    "hooks": []
+    "match_rules": [
+      {
+        "id": "psm3_rfcomm",
+        "match": {"field": "body", "contains": "PSM: 3", "not_contains": "PSM: 3 "},
+        "tags": ["L2CAP", "RFCOMM"],
+        "annotation": "L2CAP for RFCOMM (PSM 3)",
+        "exclusive": true
+      },
+      {
+        "id": "sco_setup",
+        "match": {"field": "full", "any_of": ["Setup Synchronous", "Enhanced Setup Synchronous"]},
+        "tags": ["SCO", "HCI"],
+        "annotation": "SCO/eSCO connection setup",
+        "set_flag": "saw_sco_setup",
+        "exclusive": true
+      },
+      {
+        "id": "sco_changed",
+        "match": {"field": "full", "contains": "Synchronous Connection Changed"},
+        "tags": ["SCO", "HCI"],
+        "annotation": "SCO parameters changed",
+        "exclusive": true
+      },
+      {
+        "id": "connection_success",
+        "match": {"field": "full", "all_of": ["Connection Complete", "Success"], "not_contains": "Synchronous"},
+        "tags": ["HCI"],
+        "annotation": "Connection: Success",
+        "exclusive": true
+      },
+      {
+        "id": "connection_fail",
+        "match": {"field": "full", "contains": "Connection Complete", "not_contains": "Synchronous"},
+        "tags": ["HCI"],
+        "annotation": "Connection: FAIL",
+        "exclusive": true
+      }
+    ],
+    "hooks": ["hfp_rfcomm", "hfp_sco_complete", "hfp_disconnect"]
   },
 
   "diagnose": {
+    "absence_checks": [
+      {
+        "condition_flag": "saw_sco_setup",
+        "missing_flag": "saw_sco_complete",
+        "message": "SCO/eSCO setup sent but Synchronous Connection Complete never received."
+      }
+    ],
     "hooks": []
   }
 }

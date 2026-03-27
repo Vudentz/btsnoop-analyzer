@@ -14,6 +14,46 @@
   },
 
   "annotate": {
+    "match_rules": [
+      {
+        "id": "adv_report",
+        "match": {"field": "full", "pattern": "Advertising Report(?!.*(?:BIG Info|Isochronous Group))"},
+        "tags": ["HCI", "LE"],
+        "annotation": "Advertising report {addr}",
+        "extract": {
+          "addr": {"pattern": "Address:\\s*(\\S+)", "field": "body", "default": ""}
+        },
+        "exclusive": true
+      },
+      {
+        "id": "adv_config",
+        "match": {"field": "full", "any_of": ["Set Extended Adv", "Set Advertising"]},
+        "tags": ["HCI", "LE"],
+        "annotation": "Advertising configuration",
+        "exclusive": true
+      },
+      {
+        "id": "adv_enable",
+        "match": {"field": "full", "any_of": ["Adv Enable", "Advertising Enable"]},
+        "tags": ["HCI", "LE"],
+        "annotation": "Advertising enable/disable",
+        "exclusive": true
+      },
+      {
+        "id": "periodic_adv",
+        "match": {"field": "full", "contains": "Periodic Advertising"},
+        "tags": ["HCI", "LE"],
+        "annotation": "Periodic advertising",
+        "exclusive": true
+      },
+      {
+        "id": "scan_config",
+        "match": {"field": "full", "any_of": ["Set Scan", "Extended Scan"]},
+        "tags": ["HCI", "LE"],
+        "annotation": "Scan configuration",
+        "exclusive": true
+      }
+    ],
     "hooks": []
   },
 

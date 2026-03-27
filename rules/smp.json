@@ -17,10 +17,109 @@
   },
 
   "annotate": {
-    "hooks": []
+    "match_rules": [
+      {
+        "id": "pairing_request",
+        "match": {"field": "full", "contains": "Pairing Request"},
+        "tags": ["SMP"],
+        "annotation": "SMP Pairing Request",
+        "set_flag": "saw_pairing_req",
+        "exclusive": true
+      },
+      {
+        "id": "pairing_response",
+        "match": {"field": "full", "contains": "Pairing Response"},
+        "tags": ["SMP"],
+        "annotation": "SMP Pairing Response",
+        "set_flag": "saw_pairing_rsp",
+        "exclusive": true
+      },
+      {
+        "id": "pairing_confirm",
+        "match": {"field": "full", "contains": "Pairing Confirm"},
+        "tags": ["SMP"],
+        "annotation": "SMP Pairing Confirm",
+        "set_flag": "saw_confirm",
+        "exclusive": true
+      },
+      {
+        "id": "pairing_random",
+        "match": {"field": "full", "contains": "Pairing Random"},
+        "tags": ["SMP"],
+        "annotation": "SMP Pairing Random",
+        "exclusive": true
+      },
+      {
+        "id": "pairing_pubkey",
+        "match": {"field": "full", "contains": "Pairing Public Key"},
+        "tags": ["SMP"],
+        "annotation": "SMP Public Key (Secure Connections)",
+        "set_flag": "saw_pubkey",
+        "exclusive": true
+      },
+      {
+        "id": "dhkey_check",
+        "match": {"field": "full", "contains": "DHKey Check"},
+        "tags": ["SMP"],
+        "annotation": "SMP DHKey Check",
+        "set_flag": "saw_dhkey",
+        "exclusive": true
+      },
+      {
+        "id": "pairing_failed",
+        "match": {"field": "full", "contains": "Pairing Failed"},
+        "tags": ["SMP"],
+        "annotation": "SMP Pairing FAILED: {reason}",
+        "extract": {
+          "reason": {"pattern": "Reason:\\s*(.+)", "field": "body", "default": "?"}
+        },
+        "exclusive": true
+      },
+      {
+        "id": "irk_exchanged",
+        "match": {"field": "body", "contains": "Identity Resolving Key"},
+        "tags": ["SMP"],
+        "annotation": "IRK exchanged",
+        "exclusive": true
+      },
+      {
+        "id": "ltk_exchanged",
+        "match": {"field": "body", "contains": "Long Term Key"},
+        "tags": ["SMP"],
+        "annotation": "LTK exchanged",
+        "exclusive": true
+      },
+      {
+        "id": "connection_success",
+        "match": {"field": "full", "all_of": ["Connection Complete", "Success"]},
+        "tags": ["HCI"],
+        "annotation": "Connection: Success",
+        "exclusive": true
+      },
+      {
+        "id": "connection_fail",
+        "match": {"field": "full", "contains": "Connection Complete", "not_contains": "Success"},
+        "tags": ["HCI"],
+        "annotation": "Connection: FAIL",
+        "exclusive": true
+      }
+    ],
+    "hooks": ["smp_encryption_change"]
   },
 
   "diagnose": {
+    "absence_checks": [
+      {
+        "condition_flag": "saw_pairing_req",
+        "missing_flag": "saw_pairing_rsp",
+        "message": "Pairing Request sent but Pairing Response never received -- peer may not support pairing or connection was lost."
+      },
+      {
+        "condition_flag": "saw_pairing_rsp",
+        "missing_flag": "saw_encrypt",
+        "message": "Pairing completed but Encryption Change never received."
+      }
+    ],
     "hooks": []
   }
 }

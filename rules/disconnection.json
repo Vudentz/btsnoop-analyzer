@@ -3,9 +3,37 @@
   "focus": "Disconnection analysis",
 
   "annotate": {
-    "hooks": [
-      "disconnect_classification"
-    ]
+    "match_rules": [
+      {
+        "id": "connection_success",
+        "match": {"field": "full", "all_of": ["Connection Complete", "Success"]},
+        "tags": ["HCI"],
+        "annotation": "Connection: Success",
+        "exclusive": true
+      },
+      {
+        "id": "connection_fail",
+        "match": {"field": "full", "contains": "Connection Complete", "not_contains": "Success"},
+        "tags": ["HCI"],
+        "annotation": "Connection: FAIL",
+        "exclusive": true
+      },
+      {
+        "id": "supervision_timeout",
+        "match": {"field": "body", "contains": "Supervision Timeout"},
+        "tags": ["HCI"],
+        "annotation": "Supervision timeout parameter",
+        "exclusive": true
+      },
+      {
+        "id": "connection_timeout",
+        "match": {"field": "full", "contains": "Connection Timeout"},
+        "tags": ["HCI"],
+        "annotation": "Connection timeout",
+        "exclusive": true
+      }
+    ],
+    "hooks": ["disconnect_classification"]
   },
 
   "diagnose": {

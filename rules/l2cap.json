@@ -18,7 +18,8 @@
   },
 
   "annotate": {
-    "hooks": []
+    "match_rules": [],
+    "hooks": ["l2cap_signaling"]
   },
 
   "diagnose": {
