@@ -245,7 +245,7 @@ class RuleMatchAnnotator(Annotator):
 # LE Audio annotator
 # ---------------------------------------------------------------------------
 
-class LEAudioAnnotator(Annotator):
+class LEAudioAnnotator(RuleMatchAnnotator):
     """Annotator for LE Audio traces (unicast CIS + broadcast BIG)."""
 
     name = "le_audio"
@@ -287,6 +287,7 @@ class LEAudioAnnotator(Annotator):
     }
 
     def __init__(self):
+        super().__init__()
         self.saw_pa_sync = False
         self.saw_big_info = False
         self.saw_big_create_sync = False
@@ -653,7 +654,7 @@ class LEAudioAnnotator(Annotator):
         r"Read Buffer Size"
     )
 
-    def annotate_packet(self, pkt):
+    def _run_hooks(self, pkt):
         s = pkt.summary
         body_text = "\n".join(pkt.body)
         # btmon nests LE sub-event names inside the body under
@@ -666,7 +667,7 @@ class LEAudioAnnotator(Annotator):
         # summary (for commands) and body (for Command Complete
         # responses that echo the command name).
         if self._INIT_COMMAND_RE.search(full):
-            return
+            return True
 
         # --- MGMT daemon crash detection ---
         # "@ MGMT Close: bluetoothd" followed by "@ MGMT Open: bluetoothd"
@@ -682,7 +683,7 @@ class LEAudioAnnotator(Annotator):
                 self._tag(pkt, "MGMT",
                           annotation="bluetoothd reopened (daemon restart)")
                 self._mgmt_close_pkt = None
-            return
+            return True
 
         # --- Broadcast receiver flow ---
 
@@ -923,49 +924,11 @@ class LEAudioAnnotator(Annotator):
                 and not pkt.tags:
             self._tag_disconnect(pkt)
 
+        return False
+
     def finalize(self, packets):
-        diags = []
-
-        # Daemon restart detection
-        if self._daemon_restarts > 0:
-            diags.append(Diagnostic(
-                f"NOTE: bluetoothd restarted {self._daemon_restarts} "
-                f"time(s) during this trace (MGMT Close/Open cycle "
-                f"detected).  This may indicate a daemon crash or "
-                f"intentional restart."))
-
-        # Broadcast receiver absence checks
-        if self.saw_pa_sync and not self.saw_big_info:
-            diags.append(Diagnostic(
-                "ABSENCE: PA sync established but BIG Info Advertising "
-                "Report never received -- BIG does not exist on this "
-                "PA train, or broadcaster has not started it."))
-
-        if self.saw_big_info and not self.saw_big_create_sync:
-            diags.append(Diagnostic(
-                "ABSENCE: BIG Info received but host never sent "
-                "BIG Create Sync -- host-side logic failed to act."))
-
-        if self.saw_big_create_sync and not self.saw_big_sync_established:
-            diags.append(Diagnostic(
-                "ABSENCE: BIG Create Sync sent but BIG Sync never "
-                "established -- controller could not sync to BIG."))
-
-        # Unicast CIS absence checks
-        if self.saw_create_cis and not self.saw_cis_established:
-            diags.append(Diagnostic(
-                "ABSENCE: Create CIS sent but CIS Established never "
-                "received."))
-
-        if self.saw_cis_established and not self.saw_setup_iso:
-            diags.append(Diagnostic(
-                "ABSENCE: CIS established but Setup ISO Data Path "
-                "never sent."))
-
-        if self.saw_setup_iso and not self.saw_iso_data:
-            diags.append(Diagnostic(
-                "ABSENCE: ISO data path set up but no ISO data "
-                "packets observed."))
+        # Declarative absence checks and notes from JSON
+        diags = super().finalize(packets)
 
         # Broadcast/unicast subcategory: when the trace is broadcast-
         # dominant (PA/BIG/BASS activity present, ASEs never progressed
@@ -1023,7 +986,7 @@ class LEAudioAnnotator(Annotator):
 # A2DP annotator
 # ---------------------------------------------------------------------------
 
-class A2DPAnnotator(Annotator):
+class A2DPAnnotator(RuleMatchAnnotator):
     """Annotator for A2DP / AVDTP traces.
 
     Tracks the AVDTP state machine per SEID, extracts codec
@@ -1052,6 +1015,7 @@ class A2DPAnnotator(Annotator):
     _LABEL_RE = re.compile(r"label\s+(\d+)")
 
     def __init__(self):
+        super().__init__()
         self.saw_discover = False
         self.saw_set_config = False
         self.saw_open = False
@@ -1303,14 +1267,14 @@ class A2DPAnnotator(Annotator):
             seps.append(current)
         return seps
 
-    def annotate_packet(self, pkt):
+    def _run_hooks(self, pkt):
         s = pkt.summary
         body_text = "\n".join(pkt.body)
         full = s + "\n" + body_text
 
         if "AVDTP:" in full:
             self._annotate_avdtp(pkt, body_text, full)
-            return
+            return True
 
         if "PSM: 25" in body_text and not pkt.tags:
             self._tag(pkt, ["L2CAP", "AVDTP"],
@@ -1356,6 +1320,8 @@ class A2DPAnnotator(Annotator):
                             if lat_full else f"{max_lat} msec"
                         self._tag(pkt, ["A2DP", "HCI"],
                                   annotation=f"High latency: {lat_str}")
+
+        return False
 
     def _annotate_avdtp(self, pkt, body_text, full):
         """Annotate AVDTP signaling with state machine tracking."""
@@ -1639,19 +1605,8 @@ class A2DPAnnotator(Annotator):
                 return
 
     def finalize(self, packets):
-        diags = []
-        if self.saw_discover and not self.saw_set_config:
-            diags.append(Diagnostic(
-                "ABSENCE: AVDTP Discover completed but Set "
-                "Configuration never sent."))
-        if self.saw_set_config and not self.saw_open:
-            diags.append(Diagnostic(
-                "ABSENCE: AVDTP Set Configuration accepted but "
-                "Open never sent."))
-        if self.saw_open and not self.saw_start:
-            diags.append(Diagnostic(
-                "ABSENCE: AVDTP Open completed but Start "
-                "never sent."))
+        # Declarative absence checks from JSON
+        diags = super().finalize(packets)
 
         # Stream configuration summary
         for seid, config in self._stream_config.items():

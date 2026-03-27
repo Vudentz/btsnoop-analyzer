@@ -65,6 +65,44 @@
   },
 
   "diagnose": {
+    "absence_checks": [
+      {
+        "condition_flag": "saw_pa_sync",
+        "missing_flag": "saw_big_info",
+        "message": "PA sync established but BIG Info Advertising Report never received -- BIG does not exist on this PA train, or broadcaster has not started it."
+      },
+      {
+        "condition_flag": "saw_big_info",
+        "missing_flag": "saw_big_create_sync",
+        "message": "BIG Info received but host never sent BIG Create Sync -- host-side logic failed to act."
+      },
+      {
+        "condition_flag": "saw_big_create_sync",
+        "missing_flag": "saw_big_sync_established",
+        "message": "BIG Create Sync sent but BIG Sync never established -- controller could not sync to BIG."
+      },
+      {
+        "condition_flag": "saw_create_cis",
+        "missing_flag": "saw_cis_established",
+        "message": "Create CIS sent but CIS Established never received."
+      },
+      {
+        "condition_flag": "saw_cis_established",
+        "missing_flag": "saw_setup_iso",
+        "message": "CIS established but Setup ISO Data Path never sent."
+      },
+      {
+        "condition_flag": "saw_setup_iso",
+        "missing_flag": "saw_iso_data",
+        "message": "ISO data path set up but no ISO data packets observed."
+      }
+    ],
+    "notes": [
+      {
+        "condition": {"counter": "_daemon_restarts", "op": "gt", "value": 0},
+        "message": "NOTE: bluetoothd restarted {_daemon_restarts} time(s) during this trace (MGMT Close/Open cycle detected).  This may indicate a daemon crash or intentional restart."
+      }
+    ],
     "hooks": []
   }
 }

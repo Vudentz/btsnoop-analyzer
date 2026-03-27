@@ -23,6 +23,23 @@
   },
 
   "diagnose": {
+    "absence_checks": [
+      {
+        "condition_flag": "saw_discover",
+        "missing_flag": "saw_set_config",
+        "message": "AVDTP Discover completed but Set Configuration never sent."
+      },
+      {
+        "condition_flag": "saw_set_config",
+        "missing_flag": "saw_open",
+        "message": "AVDTP Set Configuration accepted but Open never sent."
+      },
+      {
+        "condition_flag": "saw_open",
+        "missing_flag": "saw_start",
+        "message": "AVDTP Open completed but Start never sent."
+      }
+    ],
     "hooks": []
   }
 }
