@@ -1,7 +1,8 @@
 # Architecture
 
 This document describes the 5-step analysis pipeline from issue
-submission to posted diagnostic report.
+submission to posted diagnostic report.  Detailed documentation for
+each step is in separate files under `doc/`.
 
 ## Pipeline Overview
 
@@ -20,13 +21,13 @@ submission to posted diagnostic report.
               ┌─ Step 1: Detection (detect.py) ─────────> detect.md
               │          │
               │          v
-              │  Step 2: Filter (annotate.py prefilter) ─> filter.md
+              │  Step 2: Filter (prefilter.py) ──────────> filter.md
               │          │
               │          v
               │  Step 3: Annotation (annotate.py) ──────> annotate.md
               │          │
               │          v
-              │  Step 4: Diagnostics (annotate.py) ─────> diagnose.md
+              │  Step 4: Diagnostics (diagnose.py) ─────> diagnose.md
               │          │
               │          v
               │  Step 5: LLM Analysis (analyze.py) ─────> analyze.md
@@ -37,6 +38,57 @@ submission to posted diagnostic report.
 
 Each step writes a separate markdown file to `results/` and gets
 posted as its own GitHub issue comment.
+
+## Step Summaries
+
+### Step 1: Detection
+
+Auto-detects which protocol area is most relevant by scanning every
+trace line against patterns loaded from JSON rule files.  Areas are
+scored (`errors * 10 + activity`), and `select_focus()` picks the
+best focus — preferring error areas, then audio areas, with
+multi-audio coexistence and advertising interference detection.
+
+**Details:** [doc/step1-detection.md](doc/step1-detection.md)
+
+### Step 2: Prefilter
+
+Reduces the annotated trace to fit within the LLM's context budget.
+Produces a three-section output: summary header (packet counts,
+diagnostics), annotations section (timeline + decoded meanings), and
+raw btmon packets (key = full body, context = header-only, skip =
+gap markers).  Budget exhaustion drops context first, then switches
+key packets to header-only.
+
+**Details:** [doc/step2-prefilter.md](doc/step2-prefilter.md)
+
+### Step 3: Annotation
+
+Parses btmon output into Packet objects, then applies focus-specific
+annotators.  9 annotators extend `RuleMatchAnnotator`, which combines
+declarative JSON rules (pattern matching, variable extraction, flag
+setting) with procedural hooks (state machines, byte decoding,
+cross-packet correlation).
+
+**Details:** [doc/step3-annotation.md](doc/step3-annotation.md)
+
+### Step 4: Diagnostics
+
+Formats annotator observations into a structured table: graceful
+disconnect packets, absence-based errors (`:warning:`), stream/config
+summaries, state transition tables, and informational notes
+(`:information_source:`).
+
+**Details:** [doc/step4-diagnostics.md](doc/step4-diagnostics.md)
+
+### Step 5: LLM Analysis
+
+Sends the prefiltered trace + focus-specific BlueZ documentation to
+an LLM with a structured fill-in-the-blank template.  10 templates
+enforce consistent output with strict formatting rules (verdict
+definitions, issue format, recommendations).
+
+**Details:** [doc/step5-analysis.md](doc/step5-analysis.md)
 
 ## Issue Submission and Workflow
 
@@ -63,159 +115,38 @@ and `issues.reopened`. It:
 6. Runs the 5-step pipeline via `scripts/analyze.py`
 7. Posts each step's output as a separate issue comment
 
-## Step 1: Detection (`detect.py` → `results/detect.md`)
+## Annotator Hierarchy
 
-Auto-detects which protocol area is most relevant in the trace.
+All 9 annotators extend `RuleMatchAnnotator`, which combines
+declarative JSON match_rules with procedural hooks:
 
-`detect.py` defines protocol areas, each with:
-
-- **Activity patterns** — regexes indicating a protocol is present
-  (e.g., AVDTP signaling for A2DP, CIS events for LE Audio)
-- **Error patterns** — regexes matching protocol-specific failures
-- **Absence checks** — expected-but-missing events (e.g., "PA sync
-  established but BIG Info never received" for broadcast)
-
-Areas are scored by activity count and error presence. The top-scoring
-area with errors is preferred. When the user selects "General (full
-analysis)", `select_focus()` picks the best area — preferring audio
-protocols over background noise like advertising/HCI init.
-
-**Output:** A markdown comment showing detected areas, scores, and the
-chosen focus.
-
-**Standalone usage:**
-
-```bash
-btmon -r trace.log | python3 scripts/detect.py
+```
+Annotator (base)
+  └── RuleMatchAnnotator (JSON rules + hooks)
+        ├── LEAudioAnnotator     (all hooks)
+        ├── A2DPAnnotator        (all hooks)
+        ├── HFPAnnotator         (5 rules + 3 hooks)
+        ├── SMPAnnotator         (11 rules + 1 hook)
+        ├── ConnectionsAnnotator (4 rules + 2 hooks)
+        ├── DisconnectionAnnotator (4 rules + 1 hook)
+        ├── L2CAPAnnotator       (all hooks)
+        ├── AdvertisingAnnotator (5 rules, pure declarative)
+        └── HCIInitAnnotator     (6 rules + 1 hook)
 ```
 
-## Step 2: Filter (`annotate.py` prefilter → `results/filter.md`)
+## JSON Rule System
 
-Produces a summary of the prefiltering results: how the raw trace was
-reduced to fit within the LLM's context budget.
+Declarative rules are defined in `rules/*.json` and compiled at
+import time by `rules.py`.  Each rule file defines:
 
-The filter step reports:
+- **`detect`** — activity/error patterns and absence checks for Step 1
+- **`annotate.match_rules`** — packet-matching rules with tags,
+  priority, annotations, variable extraction, and flag setting
+- **`annotate.hooks`** — named hooks for procedural logic
+- **`diagnose.absence_checks`** — flag-based absence detection
+- **`diagnose.notes`** — counter/flag-conditional notes
 
-- **Packet counts** — total, key, context, skipped
-- **Time span** — first to last packet timestamp
-- **Budget usage** — characters used vs. limit
-
-For focus areas with a dedicated annotator, the `prefilter()` function
-does protocol-aware packet selection:
-
-- **Key packets** — signaling, state changes → included with full body
-- **Context packets** — bulk data (ISO, A2DP media) → header only
-- **Skipped packets** — unrelated traffic → gap markers
-
-For areas without an annotator, `clip_for_focus()` uses pattern-based
-extraction around matched lines. For "General", simple truncation.
-
-**Output:** A markdown comment with packet breakdown and budget stats.
-
-**Standalone usage (prefilter):**
-
-```bash
-btmon -r trace.log | python3 scripts/annotate.py --focus "Audio / A2DP"
-```
-
-## Step 3: Annotation (`annotate.py` → `results/annotate.md`)
-
-Produces a **Key Frames** table listing signaling packets with
-timestamps, protocol tags, and one-line semantic descriptions.
-
-Each annotator understands its protocol's expected flow and tags
-packets with:
-
-- **Tags** — protocol/profile short names: `AVDTP`, `ASCS`, `CIS`,
-  `HCI`, `L2CAP`, `SBC`, etc. Multi-tag for cross-layer events.
-- **Priority** — `key` (signaling), `context` (bulk data), `skip`
-- **Annotations** — decoded one-line descriptions
-
-### Available Annotators
-
-| Annotator | Focus Areas | What it Tracks |
-|-----------|-------------|----------------|
-| LE Audio (unicast) | Audio / LE Audio | CIG/CIS lifecycle, ASE state, ISO data path |
-| LE Audio (broadcast) | Audio / LE Audio | PA sync, BIG sync, BASE parsing, PAST |
-| A2DP | Audio / A2DP | AVDTP signaling, SBC/AAC config, media data flow |
-| HFP | Audio / HFP | RFCOMM setup, AT commands, SCO connections |
-| Connection | Connection issues, Disconnection | LE/BR connection lifecycle, disconnect reasons |
-| Pairing | Pairing / Security | SMP pairing, key exchange, bonding |
-| Advertising | Advertising / Scanning | ADV reports, scan params, extended advertising |
-| GATT | GATT discovery | Service/characteristic discovery, ATT operations |
-
-**Output:** A markdown table of up to 50 key frames with `#`, timestamp,
-tags, and description columns.
-
-## Step 4: Diagnostics (`annotate.py` → `results/diagnose.md`)
-
-Produces a **Diagnostics** table combining two sources:
-
-1. **Graceful disconnect packets** — HCI Disconnect commands that were
-   intentionally initiated (with frame number and timestamp)
-2. **Annotator diagnostics** — protocol-level observations without
-   specific frame numbers:
-   - `STREAM:` — audio stream summary (codec, config, peak state)
-   - `CONFIG:` — codec/transport configuration details
-   - `STATE:` — state transition tables (multi-line, shown as code blocks)
-   - `ABSENCE:` — expected events that never occurred (:warning:)
-   - `NOTE:` / `INFO:` — informational observations (:information_source:)
-
-**Output:** A markdown table with `#`, timestamp, tags, and diagnostic
-columns. Annotator diagnostics use `-` for frame/timestamp.
-
-## Step 5: LLM Analysis (`analyze.py` → `results/analyze.md`)
-
-Sends the prefiltered trace + documentation to an LLM for structured
-analysis.
-
-### Documentation Loading
-
-The `FOCUS_DOCS` dict maps focus areas to BlueZ documentation files
-(e.g., `btmon-le-audio.rst`, `btmon-a2dp.rst`). Focus-specific docs
-are loaded instead of the full `btmon.rst` to stay within context
-limits.
-
-### Prompt Construction
-
-- **System prompt** — LLM role as Bluetooth protocol analyst +
-  documentation in a `<btmon-documentation>` block + detected
-  absence-based errors
-- **User prompt** — User description, focus area, prefiltered trace
-  in a code block, and output format instructions from `templates.py`
-
-### Output Templates (`templates.py`)
-
-Each focus area has a structured fill-in-the-blank template that forces
-consistent output. Templates define exact section headings, field
-labels, and table formats:
-
-- **Audio Streams table** — shared by A2DP and LE Audio templates:
-  stream ID, direction, codec, peak state, config
-- **A2DP template** — AVDTP state transitions, media stats, latency
-- **LE Audio template** — CIG/CIS parameters, ASE state transitions,
-  ISO data path
-- **General template** — connection timeline, protocol analysis, issues
-
-### LLM Providers
-
-| Provider | API Endpoint | Auth | Default Model |
-|----------|-------------|------|---------------|
-| GitHub Models | `models.github.ai/inference` | `GH_MODELS_TOKEN` or `GITHUB_TOKEN` | `openai/gpt-4o-mini` |
-| OpenAI | `api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o` |
-| Anthropic | `api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
-
-### Context Budgets
-
-| Provider | Trace limit | Docs limit |
-|----------|------------|------------|
-| GitHub Models (free) | 16K chars | 4K chars |
-| OpenAI | 100K chars | 50K chars |
-| Anthropic | 100K chars | 50K chars |
-
-**Output:** The LLM's structured diagnostic report, wrapped in a
-"Step 5: LLM Analysis" heading. The workflow appends a footer with
-btsnoop-analyzer attribution.
+Rule format specification: [rules/RULES.md](rules/RULES.md)
 
 ## File Map
 
@@ -229,15 +160,36 @@ btsnoop-analyzer/
 ├── scripts/
 │   ├── analyze.py               # Main entry: decode, anonymize, orchestrate pipeline
 │   ├── detect.py                # Step 1: area scoring, absence checks, log clipping
-│   ├── annotate.py              # Steps 2-4: packet parser, annotators, prefilter
+│   ├── annotate.py              # Step 3: packet annotators (9), annotation formatting
+│   ├── prefilter.py             # Step 2: budget-aware trace filtering
+│   ├── diagnose.py              # Step 4: diagnostics formatting
 │   ├── templates.py             # Step 5: structured output templates per focus area
+│   ├── packet.py                # Shared types: Packet, Diagnostic, parse_packets()
+│   ├── rules.py                 # JSON rule loader, RuleSet, MatchCondition compilation
 │   └── anonymize.sh             # Shell-based MAC anonymization (standalone use)
+├── rules/
+│   ├── RULES.md                 # Rule format specification
+│   ├── a2dp.json                # detect + 3 diagnose absence checks
+│   ├── advertising.json         # detect + 5 match_rules (pure declarative)
+│   ├── connections.json         # detect + 4 match_rules + 2 hooks
+│   ├── disconnection.json       # detect + 4 match_rules + 1 hook
+│   ├── hci_init.json            # detect + 6 match_rules + 1 hook
+│   ├── hfp.json                 # detect + 5 match_rules + 3 hooks + 1 absence
+│   ├── l2cap.json               # detect + 0 match_rules + 1 hook
+│   ├── le_audio.json            # detect + 6 diagnose absence + 1 note
+│   └── smp.json                 # detect + 11 match_rules + 1 hook + 2 absence
+├── doc/
+│   ├── step1-detection.md       # Detection logic deep-dive
+│   ├── step2-prefilter.md       # Prefilter logic deep-dive
+│   ├── step3-annotation.md      # Annotation logic deep-dive
+│   ├── step4-diagnostics.md     # Diagnostics logic deep-dive
+│   └── step5-analysis.md        # LLM prompting logic deep-dive
 ├── tests/
 │   ├── conftest.py              # pytest fixtures (decoded trace texts)
 │   ├── test_annotate_a2dp.py    # A2DP annotator tests (23 tests)
-│   ├── test_annotate_leaudio.py # LE Audio annotator tests (22 tests)
-│   ├── test_detect.py           # Detection and focus selection tests
-│   ├── test_invalid.py          # Edge case tests (empty, garbage, wrong focus)
+│   ├── test_annotate_leaudio.py # LE Audio annotator tests (31 tests)
+│   ├── test_detect.py           # Detection and focus selection tests (31 tests)
+│   ├── test_invalid.py          # Edge case tests (12 tests)
 │   └── fixtures/                # Decoded btmon trace fixtures
 │       ├── a2dp.txt
 │       ├── le_audio_cis.txt
