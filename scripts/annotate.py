@@ -55,7 +55,7 @@ HEADER_RE = re.compile(
     r'^([<>@=])\s+'           # direction marker
     r'(.+?)'                  # summary (non-greedy)
     r'(?:\s+#(\d+))?'         # optional frame number
-    r'\s+\[hci\d+\]\s+'       # [hciN] (specific match avoids eating [addr..])
+    r'\s+(?:\[hci\d+\]|\{0x\w+\})\s+'  # [hciN] or {0xNNNN} index
     r'(\d+\.\d+)\s*$'         # timestamp
 )
 
@@ -412,6 +412,14 @@ class LEAudioAnnotator(Annotator):
         self._ase_first_pkt = {}
         # First ISO data packet reference
         self._first_iso_pkt = None
+        # PA Report deduplication: track last BASE body hash
+        self._last_pa_base_hash = None
+        self._pa_report_count = 0
+        # BIG Info deduplication: track whether first BIG Info was seen
+        self._saw_first_big_info = False
+        # MGMT crash detection: last MGMT Close packet (awaiting Open)
+        self._mgmt_close_pkt = None
+        self._daemon_restarts = 0
         # ASE state rank for peak tracking: higher = more progressed
         self._ASE_STATE_RANK = {
             "Codec Configured": 1,
@@ -730,6 +738,18 @@ class LEAudioAnnotator(Annotator):
             self._ase_state_handles.add(handle)
             self._tag_ase_state(pkt, data)
 
+    # HCI init commands whose body text lists protocol names/codecs
+    # without representing actual protocol activity.  Matching against
+    # their body produces false positives (e.g. "LE Set Event Mask"
+    # body listing "LE Periodic Advertising Sync Established").
+    _INIT_COMMAND_RE = re.compile(
+        r"Set Event Mask|"
+        r"Read Local Supported Codec|"
+        r"Read Local Supported Features|"
+        r"Read BD ADDR|"
+        r"Read Buffer Size"
+    )
+
     def annotate_packet(self, pkt):
         s = pkt.summary
         body_text = "\n".join(pkt.body)
@@ -737,6 +757,29 @@ class LEAudioAnnotator(Annotator):
         # "LE Meta Event (0x3e)" headers, and HCI command names may
         # be truncated in the summary.  Search both locations.
         full = s + "\n" + body_text
+
+        # Skip HCI init commands — their body text lists protocol
+        # names that would cause false-positive matches.  Check both
+        # summary (for commands) and body (for Command Complete
+        # responses that echo the command name).
+        if self._INIT_COMMAND_RE.search(full):
+            return
+
+        # --- MGMT daemon crash detection ---
+        # "@ MGMT Close: bluetoothd" followed by "@ MGMT Open: bluetoothd"
+        # indicates a daemon restart (crash or intentional restart).
+        # Only track bluetoothd (not btmgmt, bluetoothctl, etc.).
+        if pkt.direction == "@" and "MGMT" in s and "bluetoothd" in s:
+            if "MGMT Close" in s:
+                self._mgmt_close_pkt = pkt
+            elif "MGMT Open" in s and self._mgmt_close_pkt is not None:
+                self._daemon_restarts += 1
+                self._tag(self._mgmt_close_pkt, "MGMT",
+                          annotation="bluetoothd closed (daemon restart)")
+                self._tag(pkt, "MGMT",
+                          annotation="bluetoothd reopened (daemon restart)")
+                self._mgmt_close_pkt = None
+            return
 
         # --- Broadcast receiver flow ---
 
@@ -758,24 +801,48 @@ class LEAudioAnnotator(Annotator):
 
         elif "Periodic Advertising Report" in full:
             if "Basic Audio Announcement" in body_text:
-                self._tag(pkt, "PA",
-                          annotation="PA Report with BASE data")
+                # Hash only the BASE portion (from "Basic Audio
+                # Announcement" onward) — header fields like RSSI
+                # vary between reports and would defeat dedup.
+                base_start = body_text.find("Basic Audio Announcement")
+                base_data = body_text[base_start:]
+                body_hash = hash(base_data)
+                self._pa_report_count += 1
+                if body_hash != self._last_pa_base_hash:
+                    # New or changed BASE — always key
+                    self._last_pa_base_hash = body_hash
+                    self._tag(pkt, "PA",
+                              annotation="PA Report with BASE data")
+                else:
+                    # Duplicate BASE — demote to context
+                    self._tag(pkt, "PA", priority="context",
+                              annotation="PA Report (repeat)")
             else:
-                self._tag(pkt, "PA",
+                self._tag(pkt, "PA", priority="context",
                           annotation="PA Report")
 
-        elif "BIG Info Advertising Report" in full:
-            self._tag(pkt, "BIG",
-                      annotation="BIG Info received -- BIG exists "
-                                 "on this PA train")
+        elif "BIG Info Advertising Report" in full \
+                or "Isochronous Group Info Advertising Report" in full:
             self.saw_big_info = True
+            if not self._saw_first_big_info:
+                # First BIG Info — key frame
+                self._saw_first_big_info = True
+                self._tag(pkt, "BIG",
+                          annotation="BIG Info received -- BIG exists "
+                                     "on this PA train")
+            else:
+                # Subsequent BIG Info — periodic repeat, demote
+                self._tag(pkt, "BIG", priority="context",
+                          annotation="BIG Info (repeat)")
 
-        elif "BIG Create Sync" in full:
+        elif "BIG Create Sync" in full \
+                or "Isochronous Group Create Sync" in full:
             self._tag(pkt, "BIG",
                       annotation="Host requesting BIG sync")
             self.saw_big_create_sync = True
 
-        elif "BIG Sync Established" in full:
+        elif "BIG Sync Established" in full \
+                or "Isochronous Group Sync Established" in full:
             status = "Success" if "Success" in body_text else "FAIL"
             self._tag(pkt, "BIG",
                       annotation=f"BIG sync result: {status}")
@@ -784,11 +851,13 @@ class LEAudioAnnotator(Annotator):
                 self._tag(pkt, "ERROR",
                           annotation="BIG sync FAILED")
 
-        elif "BIG Sync Lost" in full:
+        elif "BIG Sync Lost" in full \
+                or "Isochronous Group Sync Lost" in full:
             self._tag(pkt, "BIG",
                       annotation="BIG sync lost")
 
-        elif "BIG Terminate" in full:
+        elif "BIG Terminate" in full \
+                or "Isochronous Group Terminate" in full:
             self._tag(pkt, "BIG",
                       annotation="BIG terminated")
 
@@ -924,6 +993,14 @@ class LEAudioAnnotator(Annotator):
             self._tag(pkt, "BASS",
                       annotation="BASS Add Source")
 
+        elif "Modify Source" in body_text:
+            self._tag(pkt, "BASS",
+                      annotation="BASS Modify Source")
+
+        elif "Remove Source" in body_text:
+            self._tag(pkt, "BASS",
+                      annotation="BASS Remove Source")
+
         # --- Codec info ---
 
         elif "LC3" in body_text and ("Codec:" in body_text or
@@ -945,6 +1022,14 @@ class LEAudioAnnotator(Annotator):
 
     def finalize(self, packets):
         diags = []
+
+        # Daemon restart detection
+        if self._daemon_restarts > 0:
+            diags.append(Diagnostic(
+                f"NOTE: bluetoothd restarted {self._daemon_restarts} "
+                f"time(s) during this trace (MGMT Close/Open cycle "
+                f"detected).  This may indicate a daemon crash or "
+                f"intentional restart."))
 
         # Broadcast receiver absence checks
         if self.saw_pa_sync and not self.saw_big_info:
@@ -978,6 +1063,25 @@ class LEAudioAnnotator(Annotator):
             diags.append(Diagnostic(
                 "ABSENCE: ISO data path set up but no ISO data "
                 "packets observed."))
+
+        # Broadcast/unicast subcategory: when the trace is broadcast-
+        # dominant (PA/BIG/BASS activity present, ASEs never progressed
+        # past Idle), demote unicast-only key frames to context so they
+        # don't waste output budget.
+        _UNICAST_ONLY_TAGS = {"PACS", "ASCS", "ASE_CP", "ASE_STATE"}
+        broadcast_active = (self.saw_pa_sync or self.saw_big_info
+                            or self.saw_big_create_sync
+                            or any("BASS" in t for pkt in packets
+                                   for t in pkt.tags))
+        unicast_progressed = any(
+            self._ASE_STATE_RANK.get(st, 0) > 0
+            for st in self._ase_peak_state.values()
+        )
+        if broadcast_active and not unicast_progressed:
+            for pkt in packets:
+                if pkt.priority == "key" and pkt.tags:
+                    if set(pkt.tags).issubset(_UNICAST_ONLY_TAGS):
+                        pkt.priority = "context"
 
         # Audio Streams table: STREAM lines for common template
         for ase_id, info in sorted(self._ase_streams.items()):
@@ -2023,7 +2127,8 @@ class AdvertisingAnnotator(Annotator):
         full = s + "\n" + body_text
 
         if "Advertising Report" in full and \
-                "BIG Info" not in full:
+                "BIG Info" not in full and \
+                "Isochronous Group Info" not in full:
             addr_m = re.search(r"Address:\s*(\S+)", body_text)
             addr = addr_m.group(1) if addr_m else ""
             self._tag(pkt, ["HCI", "LE"],

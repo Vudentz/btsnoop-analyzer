@@ -130,15 +130,17 @@ AREAS = [
             r"Setup Isochrono",
             r"Isochronous Data Path",
             r"LE-CIS:",
-            # Broadcast (BIG) patterns
+            # Broadcast (BIG) patterns — btmon uses both abbreviated
+            # ("BIG Info") and full ("Broadcast Isochronous Group Info")
+            # forms depending on context.
             r"Basic Audio Announcement",
             r"Create BIG",
             r"BIG Complete",
-            r"BIG Create Sync",
-            r"BIG Sync Established",
-            r"BIG Info Advertising Report",
+            r"(?:BIG|Isochronous Group) Create Sync",
+            r"(?:BIG|Isochronous Group) Sync Established",
+            r"(?:BIG Info|Isochronous Group Info) Advertising Report",
             # BASS / PA patterns (broadcast receiver flow)
-            r"Add Source",
+            r"(?:Add|Modify|Remove) Source",
             r"Periodic Advertising Create Sync",
             r"Periodic Advertising Sync Established",
             r"Periodic Advertising Sync Transfer Received",
@@ -148,27 +150,27 @@ AREAS = [
         errors=[
             r"CIS Established.*Status:(?!.*Success)",
             r"Isochronous Stream Established.*Status:(?!.*Success)",
-            r"BIG Sync Established.*Status:(?!.*Success)",
-            r"BIG Sync Lost",
-            r"BIG Terminate",
+            r"(?:BIG|Isochronous Group) Sync Established.*Status:(?!.*Success)",
+            r"(?:BIG|Isochronous Group) Sync Lost",
+            r"(?:BIG|Isochronous Group) Terminate",
             r"State:.*Releasing",
         ],
         absence_checks=[
             AbsenceCheck(
                 prerequisite=r"Periodic Advertising Sync (?:Established|Transfer Received)",
-                expected=r"BIG Info Advertising Report",
+                expected=r"(?:BIG Info|Isochronous Group Info) Advertising Report",
                 message="PA synced but BIG Info never received -- "
                         "BIG does not exist on this PA train",
             ),
             AbsenceCheck(
-                prerequisite=r"BIG Info Advertising Report",
-                expected=r"BIG Create Sync",
+                prerequisite=r"(?:BIG Info|Isochronous Group Info) Advertising Report",
+                expected=r"(?:BIG|Isochronous Group) Create Sync",
                 message="BIG Info received but host never sent "
                         "BIG Create Sync",
             ),
             AbsenceCheck(
-                prerequisite=r"BIG Create Sync",
-                expected=r"BIG Sync Established",
+                prerequisite=r"(?:BIG|Isochronous Group) Create Sync",
+                expected=r"(?:BIG|Isochronous Group) Sync Established",
                 message="BIG Create Sync sent but BIG Sync never "
                         "established",
             ),
@@ -290,6 +292,47 @@ class DetectedArea:
         return self.error_count > 0 or len(self.absence_errors) > 0
 
 
+# HCI init commands whose body lines list protocol/codec names
+# without representing actual protocol activity.
+_INIT_COMMAND_RE = re.compile(
+    r"Set Event Mask|"
+    r"Read Local Supported Codec|"
+    r"Read Local Supported Features|"
+    r"Read BD ADDR|"
+    r"Read Buffer Size"
+)
+
+
+def _build_skip_set(lines):
+    """Return a set of line indices inside HCI init command blocks.
+
+    Init commands (LE Set Event Mask, Read Local Supported Codecs, etc.)
+    list protocol names in their body that would cause false-positive
+    activity matches.  We mark header + body lines of these commands so
+    the scanner can skip them.  For Command Complete responses, the
+    echoed command name appears in the first body line, so we check
+    body lines too.
+    """
+    skip = set()
+    in_init = False
+    for i, line in enumerate(lines):
+        if PACKET_START_RE.match(line):
+            in_init = bool(_INIT_COMMAND_RE.search(line))
+            if in_init:
+                skip.add(i)
+        elif in_init:
+            # Indented body line of an init command
+            skip.add(i)
+        elif _INIT_COMMAND_RE.search(line):
+            # Body line of a Command Complete response that echoes
+            # an init command name (e.g. "Read Local Supported Codecs
+            # V2 (0x04|0x000d) ncmd 1") — mark this and subsequent
+            # body lines as skip.
+            in_init = True
+            skip.add(i)
+    return skip
+
+
 def detect(text):
     """Scan decoded btmon output and detect active protocol areas.
 
@@ -297,6 +340,7 @@ def detect(text):
     Only areas with at least one match are returned.
     """
     lines = text.splitlines()
+    skip = _build_skip_set(lines)
     results = []
 
     for area_def in AREAS:
@@ -307,6 +351,9 @@ def detect(text):
         err_patterns = [re.compile(p) for p in area_def.errors]
 
         for i, line in enumerate(lines):
+            if i in skip:
+                continue
+
             for pat in act_patterns:
                 if pat.search(line):
                     det.activity_count += 1
@@ -326,7 +373,9 @@ def detect(text):
             expect_re = re.compile(check.expected)
             has_prereq = False
             has_expected = False
-            for line in lines:
+            for i, line in enumerate(lines):
+                if i in skip:
+                    continue
                 if not has_prereq and prereq_re.search(line):
                     has_prereq = True
                 if not has_expected and expect_re.search(line):
