@@ -1,0 +1,163 @@
+name: 'btsnoop Analyzer'
+description: >
+  Analyze Bluetooth HCI (btsnoop) traces using a 5-step pipeline:
+  protocol detection, filtering, annotation, diagnostics, and
+  LLM-powered analysis. Builds btmon from BlueZ automatically.
+branding:
+  icon: 'bluetooth'
+  color: 'blue'
+
+inputs:
+  trace-url:
+    description: 'URL to the btsnoop trace file (.log, .snoop, .btsnoop, .cfa)'
+    required: true
+  description:
+    description: 'User description of the scenario being analyzed'
+    required: false
+    default: 'No description provided'
+  focus:
+    description: >
+      Analysis focus area. One of: General (full analysis),
+      Connection issues, Controller enumeration, Pairing / Security,
+      GATT discovery, Audio, Audio / LE Audio, Audio / A2DP,
+      Audio / HFP, L2CAP channel issues, Advertising / Scanning,
+      Disconnection analysis
+    required: false
+    default: 'General (full analysis)'
+  anonymize:
+    description: 'Anonymize MAC addresses before LLM processing (true/false)'
+    required: false
+    default: 'true'
+  provider:
+    description: 'LLM provider: github, openai, or anthropic'
+    required: false
+    default: 'github'
+  model:
+    description: 'Override the default LLM model for the chosen provider'
+    required: false
+    default: ''
+  btmon-path:
+    description: >
+      Path to a pre-built btmon binary. If not provided, btmon is
+      built from the BlueZ upstream repository automatically.
+    required: false
+    default: ''
+  docs-path:
+    description: >
+      Path to btmon.rst documentation file. If not provided, uses the
+      file from the BlueZ clone (built alongside btmon).
+    required: false
+    default: ''
+  output-dir:
+    description: 'Directory to write the result markdown files'
+    required: false
+    default: 'results'
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.12'
+
+outputs:
+  output-dir:
+    description: 'Path to the directory containing result files'
+    value: ${{ inputs.output-dir }}
+  detect:
+    description: 'Path to the detection result (Step 1)'
+    value: ${{ inputs.output-dir }}/detect.md
+  filter:
+    description: 'Path to the prefilter result (Step 2)'
+    value: ${{ inputs.output-dir }}/filter.md
+  annotate:
+    description: 'Path to the annotation result (Step 3)'
+    value: ${{ inputs.output-dir }}/annotate.md
+  diagnose:
+    description: 'Path to the diagnostics result (Step 4)'
+    value: ${{ inputs.output-dir }}/diagnose.md
+  analyze:
+    description: 'Path to the LLM analysis result (Step 5)'
+    value: ${{ inputs.output-dir }}/analyze.md
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install BlueZ build dependencies
+      if: inputs.btmon-path == ''
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential \
+          autoconf \
+          automake \
+          libtool \
+          pkg-config \
+          libglib2.0-dev \
+          libdbus-1-dev
+
+    - name: Clone and build btmon
+      if: inputs.btmon-path == ''
+      shell: bash
+      run: |
+        git clone --depth 1 https://git.kernel.org/pub/scm/bluetooth/bluez.git "${{ github.action_path }}/_bluez"
+        cd "${{ github.action_path }}/_bluez"
+        ./bootstrap && ./configure \
+          --disable-systemd \
+          --disable-udev \
+          --disable-cups \
+          --disable-obex \
+          --disable-mesh \
+          --disable-tools \
+          --disable-manpages \
+          --disable-datafiles \
+          --disable-testing \
+          --disable-experimental \
+          --disable-deprecated \
+          --disable-library \
+          --disable-client
+        make monitor/btmon -j$(nproc)
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Run analysis
+      shell: bash
+      env:
+        PYTHONUNBUFFERED: '1'
+      run: |
+        mkdir -p "${{ inputs.output-dir }}"
+
+        # Resolve btmon and docs paths
+        if [ -n "${{ inputs.btmon-path }}" ]; then
+          BTMON_PATH="${{ inputs.btmon-path }}"
+        else
+          BTMON_PATH="${{ github.action_path }}/_bluez/monitor/btmon"
+        fi
+
+        if [ -n "${{ inputs.docs-path }}" ]; then
+          DOCS_PATH="${{ inputs.docs-path }}"
+        else
+          DOCS_PATH="${{ github.action_path }}/_bluez/doc/btmon.rst"
+        fi
+
+        ANON_FLAG=""
+        if [ "${{ inputs.anonymize }}" = "true" ]; then
+          ANON_FLAG="--anonymize"
+        fi
+
+        MODEL_FLAG=""
+        if [ -n "${{ inputs.model }}" ]; then
+          MODEL_FLAG="--model ${{ inputs.model }}"
+        fi
+
+        python3 "${{ github.action_path }}/scripts/analyze.py" \
+          --trace-url "${{ inputs.trace-url }}" \
+          --description "${{ inputs.description }}" \
+          --focus "${{ inputs.focus }}" \
+          --provider "${{ inputs.provider }}" \
+          $MODEL_FLAG \
+          $ANON_FLAG \
+          --btmon-path "$BTMON_PATH" \
+          --docs-path "$DOCS_PATH" \
+          --output-dir "${{ inputs.output-dir }}"

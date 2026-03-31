@@ -152,11 +152,12 @@ Rule format specification: [rules/RULES.md](rules/RULES.md)
 
 ```
 btsnoop-analyzer/
+├── action.yml                   # Reusable GitHub Action definition
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
 │   │   └── analyze-trace.yml    # Issue form: trace upload, description, focus
 │   └── workflows/
-│       └── analyze-trace.yml    # CI workflow: build btmon, run 5-step pipeline
+│       └── analyze-trace.yml    # CI workflow: uses action.yml, posts comments
 ├── scripts/
 │   ├── analyze.py               # Main entry: decode, anonymize, orchestrate pipeline
 │   ├── detect.py                # Step 1: area scoring, absence checks, log clipping
@@ -179,6 +180,7 @@ btsnoop-analyzer/
 │   ├── le_audio.json            # detect + 6 diagnose absence + 1 note
 │   └── smp.json                 # detect + 11 match_rules + 1 hook + 2 absence
 ├── doc/
+│   ├── github-action.md         # GitHub Action usage documentation
 │   ├── step1-detection.md       # Detection logic deep-dive
 │   ├── step2-prefilter.md       # Prefilter logic deep-dive
 │   ├── step3-annotation.md      # Annotation logic deep-dive

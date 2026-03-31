@@ -98,76 +98,21 @@ jobs:
               body: '**btsnoop Analyzer** is processing your trace. This typically takes 1-3 minutes.\n\n_Decoding with btmon, then sending to LLM for analysis..._'
             });
 
-      - name: Install BlueZ build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            autoconf \
-            automake \
-            libtool \
-            pkg-config \
-            libglib2.0-dev \
-            libdbus-1-dev
-
-      - name: Clone and build btmon
-        run: |
-          git clone --depth 1 https://git.kernel.org/pub/scm/bluetooth/bluez.git bluez
-          cd bluez
-          ./bootstrap && ./configure \
-            --disable-systemd \
-            --disable-udev \
-            --disable-cups \
-            --disable-obex \
-            --disable-mesh \
-            --disable-tools \
-            --disable-manpages \
-            --disable-datafiles \
-            --disable-testing \
-            --disable-experimental \
-            --disable-deprecated \
-            --disable-library \
-            --disable-client
-          make monitor/btmon -j$(nproc)
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Run analysis
+      - name: Run btsnoop-analyzer
         id: analysis
+        uses: ./
+        with:
+          trace-url: ${{ steps.parse.outputs.trace_url }}
+          description: ${{ steps.parse.outputs.description }}
+          focus: ${{ steps.parse.outputs.focus }}
+          anonymize: ${{ steps.parse.outputs.anonymize }}
+          provider: ${{ vars.LLM_PROVIDER || 'github' }}
+          model: ${{ vars.LLM_MODEL || '' }}
         env:
-          PYTHONUNBUFFERED: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'github' }}
-          LLM_MODEL: ${{ vars.LLM_MODEL || '' }}
-        run: |
-          mkdir -p results
-
-          ANON_FLAG=""
-          if [ "${{ steps.parse.outputs.anonymize }}" = "true" ]; then
-            ANON_FLAG="--anonymize"
-          fi
-
-          MODEL_FLAG=""
-          if [ -n "$LLM_MODEL" ]; then
-            MODEL_FLAG="--model $LLM_MODEL"
-          fi
-
-          python3 scripts/analyze.py \
-            --trace-url "${{ steps.parse.outputs.trace_url }}" \
-            --description "${{ steps.parse.outputs.description }}" \
-            --focus "${{ steps.parse.outputs.focus }}" \
-            --provider "$LLM_PROVIDER" \
-            $MODEL_FLAG \
-            $ANON_FLAG \
-            --btmon-path ./bluez/monitor/btmon \
-            --docs-path ./bluez/doc/btmon.rst \
-            --output-dir results
 
       - name: Post detection comment
         if: success()
@@ -175,7 +120,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const detect = fs.readFileSync('results/detect.md', 'utf8');
+            const detect = fs.readFileSync('${{ steps.analysis.outputs.detect }}', 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -189,7 +134,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const filter = fs.readFileSync('results/filter.md', 'utf8');
+            const filter = fs.readFileSync('${{ steps.analysis.outputs.filter }}', 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -203,7 +148,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const annotate = fs.readFileSync('results/annotate.md', 'utf8');
+            const annotate = fs.readFileSync('${{ steps.analysis.outputs.annotate }}', 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -217,7 +162,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const diagnose = fs.readFileSync('results/diagnose.md', 'utf8');
+            const diagnose = fs.readFileSync('${{ steps.analysis.outputs.diagnose }}', 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -231,7 +176,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const analysis = fs.readFileSync('results/analyze.md', 'utf8');
+            const analysis = fs.readFileSync('${{ steps.analysis.outputs.analyze }}', 'utf8');
 
             const footer = `\n\n---\n<sub>Analyzed by [btsnoop-analyzer](https://github.com/${context.repo.owner}/${context.repo.repo}) using btmon from [BlueZ](https://github.com/bluez/bluez). MAC addresses ${
               '${{ steps.parse.outputs.anonymize }}' === 'true'

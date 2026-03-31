@@ -24,7 +24,36 @@ comment.
 | 4 | **Diagnostics** | Graceful disconnects, stream summaries, state tables, absence warnings |
 | 5 | **LLM Analysis** | Structured diagnostic report from the LLM |
 
-## Setup
+## Use as a GitHub Action
+
+btsnoop-analyzer is available as a reusable GitHub Action. Add it to
+any repository's workflow to analyze Bluetooth traces automatically:
+
+```yaml
+- name: Analyze trace
+  id: analyze
+  uses: Vudentz/btsnoop-analyzer@master
+  with:
+    trace-url: 'https://example.com/trace.log'
+    description: 'Audio disconnects after 30 seconds'
+    focus: 'Audio / A2DP'
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# Results are available as files in the output directory
+- name: Read analysis
+  run: cat ${{ steps.analyze.outputs.analyze }}
+```
+
+The action builds `btmon` from BlueZ, runs the full 5-step pipeline,
+and produces markdown result files. Your workflow decides what to do
+with the results — post issue comments, upload artifacts, annotate
+PRs, etc.
+
+For full documentation, inputs/outputs reference, and workflow
+examples, see [doc/github-action.md](doc/github-action.md).
+
+## Setup (standalone repository)
 
 ### 1. Create the repository
 
@@ -115,6 +144,7 @@ python3 scripts/annotate.py --focus "Audio / A2DP" < decoded.txt
 
 ```
 btsnoop-analyzer/
+├── action.yml                   # Reusable GitHub Action definition
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
 │   │   └── analyze-trace.yml    # Issue form: trace upload, description, focus
@@ -126,6 +156,8 @@ btsnoop-analyzer/
 │   ├── annotate.py              # Steps 2-4: packet parser, annotators, prefilter
 │   ├── templates.py             # Step 5: structured output templates per focus area
 │   └── anonymize.sh             # Shell-based MAC anonymization (standalone use)
+├── doc/
+│   └── github-action.md         # GitHub Action usage documentation
 ├── tests/                       # pytest test suite (87 tests)
 ├── ARCHITECTURE.md              # Pipeline architecture documentation
 └── README.md
