@@ -29,6 +29,7 @@
       },
       {
         "id": "sco_setup",
+        "direction": "<",
         "match": {"field": "full", "any_of": ["Setup Synchronous", "Enhanced Setup Synchronous"]},
         "tags": ["SCO", "HCI"],
         "annotation": "SCO/eSCO connection setup",
@@ -37,6 +38,7 @@
       },
       {
         "id": "sco_changed",
+        "direction": ">",
         "match": {"field": "full", "contains": "Synchronous Connection Changed"},
         "tags": ["SCO", "HCI"],
         "annotation": "SCO parameters changed",
@@ -44,6 +46,7 @@
       },
       {
         "id": "connection_success",
+        "direction": ">",
         "match": {"field": "full", "all_of": ["Connection Complete", "Success"], "not_contains": "Synchronous"},
         "tags": ["HCI"],
         "annotation": "Connection: Success",
@@ -51,6 +54,7 @@
       },
       {
         "id": "connection_fail",
+        "direction": ">",
         "match": {"field": "full", "contains": "Connection Complete", "not_contains": "Synchronous"},
         "tags": ["HCI"],
         "annotation": "Connection: FAIL",

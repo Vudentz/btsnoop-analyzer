@@ -102,6 +102,7 @@
       },
       {
         "id": "connection_success",
+        "direction": ">",
         "match": {"field": "full", "all_of": ["Connection Complete", "Success"]},
         "tags": ["HCI"],
         "annotation": "Connection: Success",
@@ -109,6 +110,7 @@
       },
       {
         "id": "connection_fail",
+        "direction": ">",
         "match": {"field": "full", "contains": "Connection Complete", "not_contains": "Success"},
         "tags": ["HCI"],
         "annotation": "Connection: FAIL",
@@ -116,6 +118,7 @@
       },
       {
         "id": "io_cap_request",
+        "direction": ">",
         "match": {"field": "full", "contains": "IO Capability Request"},
         "tags": ["SSP", "HCI"],
         "annotation": "SSP IO Capability Request",
@@ -124,6 +127,7 @@
       },
       {
         "id": "io_cap_response",
+        "direction": ">",
         "match": {"field": "full", "contains": "IO Capability Response"},
         "tags": ["SSP", "HCI"],
         "annotation": "SSP IO Capability Response: {capability}",
@@ -135,6 +139,7 @@
       },
       {
         "id": "user_confirm",
+        "direction": ">",
         "match": {"field": "full", "contains": "User Confirmation Request"},
         "tags": ["SSP", "HCI"],
         "annotation": "SSP User Confirmation Request (numeric comparison)",
@@ -143,6 +148,7 @@
       },
       {
         "id": "user_passkey",
+        "direction": ">",
         "match": {"field": "full", "contains": "User Passkey Notification"},
         "tags": ["SSP", "HCI"],
         "annotation": "SSP Passkey Notification",
@@ -150,6 +156,7 @@
       },
       {
         "id": "simple_pairing_success",
+        "direction": ">",
         "match": {"field": "full", "all_of": ["Simple Pairing Complete", "Success"]},
         "tags": ["SSP", "HCI"],
         "annotation": "SSP Simple Pairing: Success",
@@ -158,6 +165,7 @@
       },
       {
         "id": "simple_pairing_fail",
+        "direction": ">",
         "match": {"field": "full", "contains": "Simple Pairing Complete", "not_contains": "Success"},
         "tags": ["SSP", "HCI"],
         "annotation": "SSP Simple Pairing FAILED: {status}",
@@ -169,6 +177,7 @@
       },
       {
         "id": "auth_complete_success",
+        "direction": ">",
         "match": {"field": "full", "all_of": ["Auth Complete", "Success"]},
         "tags": ["HCI"],
         "annotation": "Authentication: Success",
@@ -177,6 +186,7 @@
       },
       {
         "id": "auth_complete_fail",
+        "direction": ">",
         "match": {"field": "full", "contains": "Auth Complete", "not_contains": "Success"},
         "tags": ["HCI"],
         "annotation": "Authentication FAILED: {status}",
@@ -188,6 +198,7 @@
       },
       {
         "id": "auth_requested",
+        "direction": "<",
         "match": {"field": "full", "contains": "Authentication Requested"},
         "tags": ["HCI"],
         "annotation": "Authentication Requested",
@@ -196,6 +207,7 @@
       },
       {
         "id": "link_key_notify",
+        "direction": ">",
         "match": {"field": "full", "contains": "Link Key Notification"},
         "tags": ["SSP", "HCI"],
         "annotation": "Link Key exchanged: {key_type}",
@@ -207,6 +219,7 @@
       },
       {
         "id": "mgmt_auth_failed",
+        "direction": "@",
         "match": {"field": "full", "all_of": ["MGMT Event", "Authentication Failed"]},
         "tags": ["MGMT"],
         "annotation": "MGMT: Authentication Failed",

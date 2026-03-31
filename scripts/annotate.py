@@ -164,6 +164,26 @@ class RuleMatchAnnotator(Annotator):
     declarative rules.
     """
 
+    # HCI init commands whose body text lists protocol/command/event
+    # names without representing actual protocol activity.  Matching
+    # against their body produces false positives (e.g. "Set Event Mask"
+    # body listing "Simple Pairing Complete", or "Read Local Supported
+    # Commands" body listing "Setup Synchronous Connection").
+    # Shared by all RuleMatchAnnotator subclasses.
+    _INIT_COMMAND_RE = re.compile(
+        r"Set Event Mask|"
+        r"Read Local Supported Commands|"
+        r"Read Local Supported Codec|"
+        r"Read Local Supported Features|"
+        r"Read Local Extended Features|"
+        r"Read BD ADDR|"
+        r"Read Buffer Size"
+    )
+
+    # Set to False in subclasses that intentionally match init commands
+    # (e.g. HCIInitAnnotator).
+    _skip_init_commands = True
+
     def __init__(self):
         from rules import get_rule_set
         self._ruleset = get_rule_set(self.name)
@@ -174,7 +194,18 @@ class RuleMatchAnnotator(Annotator):
         Hooks (subclass overrides) run first via _run_hooks().
         If a hook handles the packet, match_rules are skipped.
         Then declarative match_rules are evaluated in order.
+
+        HCI init commands (Set Event Mask, Read Local Supported
+        Commands, etc.) are skipped entirely — their body text lists
+        protocol/event names that cause false-positive matches in both
+        hooks and declarative rules.  Subclasses that intentionally
+        match init commands (e.g. HCIInitAnnotator) set
+        ``_skip_init_commands = False``.
         """
+        if self._skip_init_commands:
+            full = pkt.summary + "\n" + "\n".join(pkt.body)
+            if self._INIT_COMMAND_RE.search(full):
+                return
         if self._run_hooks(pkt):
             return
         self._apply_match_rules(pkt)
@@ -642,17 +673,6 @@ class LEAudioAnnotator(RuleMatchAnnotator):
             self._ase_state_handles.add(handle)
             self._tag_ase_state(pkt, data)
 
-    # HCI init commands whose body text lists protocol names/codecs
-    # without representing actual protocol activity.  Matching against
-    # their body produces false positives (e.g. "LE Set Event Mask"
-    # body listing "LE Periodic Advertising Sync Established").
-    _INIT_COMMAND_RE = re.compile(
-        r"Set Event Mask|"
-        r"Read Local Supported Codec|"
-        r"Read Local Supported Features|"
-        r"Read BD ADDR|"
-        r"Read Buffer Size"
-    )
 
     def _run_hooks(self, pkt):
         s = pkt.summary
@@ -661,13 +681,6 @@ class LEAudioAnnotator(RuleMatchAnnotator):
         # "LE Meta Event (0x3e)" headers, and HCI command names may
         # be truncated in the summary.  Search both locations.
         full = s + "\n" + body_text
-
-        # Skip HCI init commands — their body text lists protocol
-        # names that would cause false-positive matches.  Check both
-        # summary (for commands) and body (for Command Complete
-        # responses that echo the command name).
-        if self._INIT_COMMAND_RE.search(full):
-            return True
 
         # --- MGMT daemon crash detection ---
         # "@ MGMT Close: bluetoothd" followed by "@ MGMT Open: bluetoothd"
@@ -1900,6 +1913,7 @@ class HCIInitAnnotator(RuleMatchAnnotator):
     """Annotator for HCI initialization sequence."""
 
     name = "hci_init"
+    _skip_init_commands = False
 
     def annotate_packet(self, pkt):
         """Match declarative rules first; hook handles remainder."""

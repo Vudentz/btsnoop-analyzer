@@ -6,6 +6,7 @@
     "match_rules": [
       {
         "id": "connection_success",
+        "direction": ">",
         "match": {"field": "full", "all_of": ["Connection Complete", "Success"]},
         "tags": ["HCI"],
         "annotation": "Connection: Success",
@@ -13,6 +14,7 @@
       },
       {
         "id": "connection_fail",
+        "direction": ">",
         "match": {"field": "full", "contains": "Connection Complete", "not_contains": "Success"},
         "tags": ["HCI"],
         "annotation": "Connection: FAIL",
@@ -27,6 +29,7 @@
       },
       {
         "id": "connection_timeout",
+        "direction": ">",
         "match": {"field": "full", "contains": "Connection Timeout"},
         "tags": ["HCI"],
         "annotation": "Connection timeout",

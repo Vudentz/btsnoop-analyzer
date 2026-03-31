@@ -17,6 +17,7 @@
     "match_rules": [
       {
         "id": "adv_report",
+        "direction": ">",
         "match": {"field": "full", "pattern": "Advertising Report(?!.*(?:BIG Info|Isochronous Group))"},
         "tags": ["HCI", "LE"],
         "annotation": "Advertising report {addr}",
@@ -27,6 +28,7 @@
       },
       {
         "id": "adv_config",
+        "direction": "<",
         "match": {"field": "full", "any_of": ["Set Extended Adv", "Set Advertising"]},
         "tags": ["HCI", "LE"],
         "annotation": "Advertising configuration",
@@ -34,6 +36,7 @@
       },
       {
         "id": "adv_enable",
+        "direction": "<",
         "match": {"field": "full", "any_of": ["Adv Enable", "Advertising Enable"]},
         "tags": ["HCI", "LE"],
         "annotation": "Advertising enable/disable",
@@ -48,6 +51,7 @@
       },
       {
         "id": "scan_config",
+        "direction": "<",
         "match": {"field": "full", "any_of": ["Set Scan", "Extended Scan"]},
         "tags": ["HCI", "LE"],
         "annotation": "Scan configuration",

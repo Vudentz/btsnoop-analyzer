@@ -24,6 +24,7 @@
     "match_rules": [
       {
         "id": "conn_update",
+        "direction": ">",
         "match": {"field": "full", "contains": "Connection Update"},
         "tags": ["HCI"],
         "annotation": "Connection parameters updated",
@@ -31,6 +32,7 @@
       },
       {
         "id": "data_length_change",
+        "direction": ">",
         "match": {"field": "full", "contains": "Data Length Change"},
         "tags": ["HCI"],
         "annotation": "Data length changed",
@@ -38,6 +40,7 @@
       },
       {
         "id": "remote_features",
+        "direction": ">",
         "match": {"field": "full", "contains": "Read Remote Used Features"},
         "tags": ["HCI"],
         "annotation": "Remote features read",
@@ -45,6 +48,7 @@
       },
       {
         "id": "conn_timeout_fail",
+        "direction": ">",
         "match": {"field": "full", "any_of": ["Connection Timeout", "Connection Failed"]},
         "tags": ["HCI"],
         "annotation": "Connection failure/timeout",

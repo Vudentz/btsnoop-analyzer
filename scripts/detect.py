@@ -163,8 +163,10 @@ class DetectedArea:
 # without representing actual protocol activity.
 _INIT_COMMAND_RE = re.compile(
     r"Set Event Mask|"
+    r"Read Local Supported Commands|"
     r"Read Local Supported Codec|"
     r"Read Local Supported Features|"
+    r"Read Local Extended Features|"
     r"Read BD ADDR|"
     r"Read Buffer Size"
 )
