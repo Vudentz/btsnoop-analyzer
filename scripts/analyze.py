@@ -363,12 +363,15 @@ Format your report in GitHub-flavored markdown."""
     return system_prompt, user_prompt
 
 
+class LLMError(Exception):
+    """Raised when an LLM API call fails."""
+
+
 def call_openai(system_prompt, user_prompt, model=None):
     """Call OpenAI API."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        log("OPENAI_API_KEY not set")
-        sys.exit(1)
+        raise LLMError("OPENAI_API_KEY not set")
 
     model = model or "gpt-4o"
     payload = json.dumps({
@@ -396,19 +399,16 @@ def call_openai(system_prompt, user_prompt, model=None):
         return data["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
-        log(f"OpenAI API error {e.code}: {body[:500]}")
-        sys.exit(1)
+        raise LLMError(f"OpenAI API error {e.code}: {body[:500]}")
     except urllib.error.URLError as e:
-        log(f"OpenAI API connection error: {e}")
-        sys.exit(1)
+        raise LLMError(f"OpenAI API connection error: {e}")
 
 
 def call_anthropic(system_prompt, user_prompt, model=None):
     """Call Anthropic API."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        log("ANTHROPIC_API_KEY not set")
-        sys.exit(1)
+        raise LLMError("ANTHROPIC_API_KEY not set")
 
     model = model or "claude-sonnet-4-20250514"
     payload = json.dumps({
@@ -437,11 +437,9 @@ def call_anthropic(system_prompt, user_prompt, model=None):
         return data["content"][0]["text"]
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
-        log(f"Anthropic API error {e.code}: {body[:500]}")
-        sys.exit(1)
+        raise LLMError(f"Anthropic API error {e.code}: {body[:500]}")
     except urllib.error.URLError as e:
-        log(f"Anthropic API connection error: {e}")
-        sys.exit(1)
+        raise LLMError(f"Anthropic API connection error: {e}")
 
 
 def call_github(system_prompt, user_prompt, model=None):
@@ -453,8 +451,8 @@ def call_github(system_prompt, user_prompt, model=None):
     token = os.environ.get("GH_MODELS_TOKEN") or \
         os.environ.get("GITHUB_TOKEN")
     if not token:
-        log("GH_MODELS_TOKEN (or GITHUB_TOKEN) not set")
-        sys.exit(1)
+        raise LLMError(
+            "GH_MODELS_TOKEN (or GITHUB_TOKEN) not set")
 
     model = model or "openai/gpt-4o-mini"
     payload = json.dumps({
@@ -482,15 +480,16 @@ def call_github(system_prompt, user_prompt, model=None):
         return data["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
-        log(f"GitHub Models API error {e.code}: {body[:500]}")
+        msg = f"GitHub Models API error {e.code}: {body[:500]}"
         if e.code in (401, 403):
-            log("Hint: The built-in GITHUB_TOKEN may not have access to "
-                "GitHub Models. Create a PAT with 'models:read' scope and "
-                "store it as the GH_MODELS_TOKEN repository secret.")
-        sys.exit(1)
+            msg += (
+                "\nHint: The built-in GITHUB_TOKEN may not have access "
+                "to GitHub Models. Create a PAT with 'models:read' "
+                "scope and store it as the GH_MODELS_TOKEN repository "
+                "secret.")
+        raise LLMError(msg)
     except urllib.error.URLError as e:
-        log(f"GitHub Models API connection error: {e}")
-        sys.exit(1)
+        raise LLMError(f"GitHub Models API connection error: {e}")
 
 
 PROVIDERS = {
@@ -735,7 +734,32 @@ def main():
 
     log(f"Sending to {args.provider} for analysis...")
     provider_fn = PROVIDERS[args.provider]
-    analysis = provider_fn(system_prompt, user_prompt, args.model)
+    try:
+        analysis = provider_fn(system_prompt, user_prompt, args.model)
+    except LLMError as e:
+        log(f"LLM analysis failed: {e}")
+        analysis = (
+            "## Step 5: LLM Analysis\n\n"
+            "> **LLM analysis unavailable** — the API call failed.\n"
+            "> Steps 1-4 (detection, filtering, annotation, "
+            "diagnostics) completed successfully.\n\n"
+            "<details>\n<summary>Error details</summary>\n\n"
+            f"```\n{e}\n```\n\n"
+            "To enable LLM analysis, create a "
+            "[Personal Access Token](https://github.com/settings/tokens) "
+            "with `models:read` scope and add it as a repository secret "
+            "named `GH_MODELS_TOKEN`.\n"
+            "</details>"
+        )
+        if args.output_dir:
+            write_step("analyze", analysis)
+        if args.output:
+            with open(args.output, "w") as f:
+                f.write(analysis)
+            log(f"Analysis (error) written to {args.output}")
+        elif not args.output_dir:
+            print(analysis)
+        return
 
     # Strip <output-template> wrapper that some LLMs echo back
     analysis = re.sub(
