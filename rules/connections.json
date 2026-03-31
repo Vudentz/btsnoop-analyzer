@@ -14,7 +14,9 @@
       "LE Connection Complete.*Status:(?!.*Success)",
       "Disconnect.*Reason:",
       "Connection Timeout",
-      "Connection Failed"
+      "Connection Failed",
+      "Auth Complete.*Status:(?!.*Success)",
+      "Authentication Failed"
     ]
   },
 

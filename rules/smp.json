@@ -8,11 +8,22 @@
       "Pairing Response",
       "Pairing Public Key",
       "DHKey Check",
-      "Encryption Change"
+      "Encryption Change",
+      "Simple Pairing Complete",
+      "IO Capability Request",
+      "IO Capability Response",
+      "User Confirmation Request",
+      "User Passkey Notification",
+      "Link Key Notification",
+      "Auth Complete",
+      "Authentication Requested"
     ],
     "errors": [
       "Pairing Failed",
-      "Encryption Change.*Status:(?!.*Success)"
+      "Encryption Change.*Status:(?!.*Success)",
+      "Simple Pairing Complete.*Status:(?!.*Success)",
+      "Auth Complete.*Status:(?!.*Success)",
+      "Authentication Failed"
     ]
   },
 
@@ -102,6 +113,104 @@
         "tags": ["HCI"],
         "annotation": "Connection: FAIL",
         "exclusive": true
+      },
+      {
+        "id": "io_cap_request",
+        "match": {"field": "full", "contains": "IO Capability Request"},
+        "tags": ["SSP", "HCI"],
+        "annotation": "SSP IO Capability Request",
+        "set_flag": "saw_io_cap_req",
+        "exclusive": true
+      },
+      {
+        "id": "io_cap_response",
+        "match": {"field": "full", "contains": "IO Capability Response"},
+        "tags": ["SSP", "HCI"],
+        "annotation": "SSP IO Capability Response: {capability}",
+        "extract": {
+          "capability": {"pattern": "IO Capability:\\s*(.+)", "field": "body", "default": "?"}
+        },
+        "set_flag": "saw_io_cap_rsp",
+        "exclusive": true
+      },
+      {
+        "id": "user_confirm",
+        "match": {"field": "full", "contains": "User Confirmation Request"},
+        "tags": ["SSP", "HCI"],
+        "annotation": "SSP User Confirmation Request (numeric comparison)",
+        "set_flag": "saw_user_confirm",
+        "exclusive": true
+      },
+      {
+        "id": "user_passkey",
+        "match": {"field": "full", "contains": "User Passkey Notification"},
+        "tags": ["SSP", "HCI"],
+        "annotation": "SSP Passkey Notification",
+        "exclusive": true
+      },
+      {
+        "id": "simple_pairing_success",
+        "match": {"field": "full", "all_of": ["Simple Pairing Complete", "Success"]},
+        "tags": ["SSP", "HCI"],
+        "annotation": "SSP Simple Pairing: Success",
+        "set_flag": "saw_ssp_complete",
+        "exclusive": true
+      },
+      {
+        "id": "simple_pairing_fail",
+        "match": {"field": "full", "contains": "Simple Pairing Complete", "not_contains": "Success"},
+        "tags": ["SSP", "HCI"],
+        "annotation": "SSP Simple Pairing FAILED: {status}",
+        "extract": {
+          "status": {"pattern": "Status:\\s*(.+)", "field": "body", "default": "?"}
+        },
+        "set_flag": "saw_ssp_failed",
+        "exclusive": true
+      },
+      {
+        "id": "auth_complete_success",
+        "match": {"field": "full", "all_of": ["Auth Complete", "Success"]},
+        "tags": ["HCI"],
+        "annotation": "Authentication: Success",
+        "set_flag": "saw_auth_complete",
+        "exclusive": true
+      },
+      {
+        "id": "auth_complete_fail",
+        "match": {"field": "full", "contains": "Auth Complete", "not_contains": "Success"},
+        "tags": ["HCI"],
+        "annotation": "Authentication FAILED: {status}",
+        "extract": {
+          "status": {"pattern": "Status:\\s*(.+)", "field": "body", "default": "?"}
+        },
+        "set_flag": "saw_auth_failed",
+        "exclusive": true
+      },
+      {
+        "id": "auth_requested",
+        "match": {"field": "full", "contains": "Authentication Requested"},
+        "tags": ["HCI"],
+        "annotation": "Authentication Requested",
+        "set_flag": "saw_auth_requested",
+        "exclusive": true
+      },
+      {
+        "id": "link_key_notify",
+        "match": {"field": "full", "contains": "Link Key Notification"},
+        "tags": ["SSP", "HCI"],
+        "annotation": "Link Key exchanged: {key_type}",
+        "extract": {
+          "key_type": {"pattern": "Key Type:\\s*(.+)", "field": "body", "default": "?"}
+        },
+        "set_flag": "saw_link_key",
+        "exclusive": true
+      },
+      {
+        "id": "mgmt_auth_failed",
+        "match": {"field": "full", "all_of": ["MGMT Event", "Authentication Failed"]},
+        "tags": ["MGMT"],
+        "annotation": "MGMT: Authentication Failed",
+        "exclusive": true
       }
     ],
     "hooks": ["smp_encryption_change"]
@@ -118,6 +227,26 @@
         "condition_flag": "saw_pairing_rsp",
         "missing_flag": "saw_encrypt",
         "message": "Pairing completed but Encryption Change never received."
+      },
+      {
+        "condition_flag": "saw_io_cap_req",
+        "missing_flag": "saw_ssp_complete",
+        "message": "SSP IO Capability exchanged but Simple Pairing Complete never received -- pairing may have timed out or been rejected."
+      },
+      {
+        "condition_flag": "saw_auth_requested",
+        "missing_flag": "saw_auth_complete",
+        "message": "Authentication Requested but Auth Complete (success) never received."
+      }
+    ],
+    "notes": [
+      {
+        "condition": {"flag": "saw_ssp_failed", "value": true},
+        "message": "BR/EDR Simple Pairing failed -- check if IO capabilities are compatible and link key is valid."
+      },
+      {
+        "condition": {"flag": "saw_auth_failed", "value": true},
+        "message": "BR/EDR Authentication failed -- link key may be stale or mismatched. Try removing the device and re-pairing."
       }
     ],
     "hooks": []
