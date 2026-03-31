@@ -121,6 +121,38 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
+    - name: Apply focus area label to issue
+      if: github.event.issue.number != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        FOCUS="${{ inputs.focus }}"
+
+        # Map focus area to a short label name
+        case "$FOCUS" in
+          "General (full analysis)") LABEL="general" ;;
+          "Connection issues")       LABEL="connection" ;;
+          "Controller enumeration")  LABEL="controller" ;;
+          "Pairing / Security")      LABEL="pairing" ;;
+          "GATT discovery")          LABEL="gatt" ;;
+          "Audio")                   LABEL="audio" ;;
+          "Audio / LE Audio")        LABEL="le-audio" ;;
+          "Audio / A2DP")            LABEL="a2dp" ;;
+          "Audio / HFP")             LABEL="hfp" ;;
+          "L2CAP channel issues")    LABEL="l2cap" ;;
+          "Advertising / Scanning")  LABEL="advertising" ;;
+          "Disconnection analysis")  LABEL="disconnection" ;;
+          *) echo "Unknown focus area: $FOCUS, skipping label"; exit 0 ;;
+        esac
+
+        # Create the label if it doesn't exist (ignore error if it already exists)
+        gh label create "$LABEL" --color 0075ca --description "Focus area: $FOCUS" 2>/dev/null || true
+
+        gh issue edit "${{ github.event.issue.number }}" --add-label "$LABEL"
+        echo "Applied label: $LABEL"
+
     - name: Run analysis
       shell: bash
       env:
