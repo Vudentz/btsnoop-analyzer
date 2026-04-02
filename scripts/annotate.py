@@ -1066,6 +1066,8 @@ class A2DPAnnotator(RuleMatchAnnotator):
         self._first_start_pkt = None
         # First media data packet reference
         self._first_media_pkt = None
+        # L2CAP channel tracker for AVDTP transport (PSM 25)
+        self._l2cap_tracker = L2CAPChannelTracker(psm_filter={25})
 
     def _transition(self, seid, new_state, trigger, timestamp):
         """Record an AVDTP state transition for a SEID."""
@@ -1285,11 +1287,20 @@ class A2DPAnnotator(RuleMatchAnnotator):
         body_text = "\n".join(pkt.body)
         full = s + "\n" + body_text
 
+        # Feed every packet to L2CAP tracker (it ignores non-L2CAP)
+        l2cap_info = self._l2cap_tracker.process(pkt)
+
         if "AVDTP:" in full:
             self._annotate_avdtp(pkt, body_text, full)
             return True
 
-        if "PSM: 25" in body_text and not pkt.tags:
+        # L2CAP signaling for PSM 25 (AVDTP transport channel)
+        if l2cap_info is not None and not pkt.tags:
+            ann = (f"L2CAP {l2cap_info['signal']} for AVDTP: "
+                   f"{l2cap_info['detail']}")
+            self._tag(pkt, ["L2CAP", "AVDTP"], annotation=ann)
+
+        elif "PSM: 25" in body_text and not pkt.tags:
             self._tag(pkt, ["L2CAP", "AVDTP"],
                       annotation="L2CAP for AVDTP (PSM 25)")
 
@@ -1700,6 +1711,10 @@ class A2DPAnnotator(RuleMatchAnnotator):
                 frame=ref_pkt.frame if ref_pkt else None,
                 timestamp=ref_pkt.timestamp if ref_pkt else None,
                 tags=["A2DP"]))
+
+        # L2CAP channel lifecycle diagnostics for PSM 25
+        diags.extend(self._l2cap_tracker.diagnostics())
+
         return diags
 
 
@@ -1827,43 +1842,569 @@ class ConnectionsAnnotator(RuleMatchAnnotator):
 
 
 # ---------------------------------------------------------------------------
+# L2CAP channel lifecycle tracker (composable helper)
+# ---------------------------------------------------------------------------
+
+class L2CAPChannelTracker:
+    """Track L2CAP channel lifecycle: Connection, Configuration, Disconnect.
+
+    This is a composable helper class (not an Annotator) that can be used
+    by any annotator that needs L2CAP channel state awareness.
+
+    Tracks:
+    - Connection Request/Response pairs to learn CID <-> PSM mappings
+    - Configure Request/Response pairs by ident to detect missing responses
+    - Channel state: connecting -> connected -> configuring -> open -> disconnected
+    - Half-configured channels (Configure Request sent, no Response received)
+
+    Usage:
+        tracker = L2CAPChannelTracker(psm_filter={25})  # or None for all
+        for pkt in packets:
+            info = tracker.process(pkt)  # returns annotation info or None
+        diags = tracker.diagnostics()  # call after all packets processed
+
+    The ``psm_filter`` parameter limits tracking to channels matching the
+    given PSM values.  Pass ``None`` to track all channels.
+    """
+
+    # Regex patterns for L2CAP signaling body fields
+    _PSM_RE = re.compile(r"PSM:\s*(\d+)")
+    _SRC_CID_RE = re.compile(r"Source CID:\s*(\d+)")
+    _DST_CID_RE = re.compile(r"Destination CID:\s*(\d+)")
+    _IDENT_RE = re.compile(r"ident\s+(\d+)")
+    _RESULT_RE = re.compile(r"Result:\s*(.+)")
+    _MTU_RE = re.compile(r"MTU:\s*(\d+)")
+
+    def __init__(self, psm_filter=None):
+        """Initialize tracker.
+
+        Args:
+            psm_filter: Set of PSM values to track, or None for all.
+        """
+        self.psm_filter = psm_filter
+
+        # Active channels: (local_cid, remote_cid) -> {
+        #   psm, state, our_config_done, their_config_done,
+        #   connect_pkt, config_req_pkt, mtu_local, mtu_remote }
+        self._channels = {}
+
+        # CID -> channel key for fast lookup
+        self._cid_to_key = {}
+
+        # Pending Connection Requests: (direction, ident) -> {
+        #   psm, src_cid, pkt }
+        # direction is the direction of the Request
+        self._pending_conn = {}
+
+        # Pending Configure Requests: (direction, ident) -> {
+        #   dest_cid, mtu, pkt, channel_key }
+        self._pending_config = {}
+
+        # Completed channels (disconnected): list of channel info dicts
+        self._completed = []
+
+        # Diagnostics accumulated during processing
+        self._issues = []
+
+    def _body_text(self, pkt):
+        return "\n".join(pkt.body)
+
+    def _is_l2cap_signaling(self, pkt):
+        """Check if this packet contains L2CAP signaling."""
+        if pkt.direction not in ("<", ">"):
+            return False
+        s = pkt.summary
+        body = self._body_text(pkt)
+        return "L2CAP:" in s or "L2CAP:" in body
+
+    def _extract_field(self, regex, body_text):
+        """Extract first match of regex from body text."""
+        m = regex.search(body_text)
+        return m.group(1).strip() if m else None
+
+    def _channel_key_for_cid(self, cid):
+        """Look up channel key by any known CID."""
+        return self._cid_to_key.get(cid)
+
+    def _register_channel(self, local_cid, remote_cid, psm, pkt):
+        """Register a new channel after successful connection."""
+        key = (local_cid, remote_cid)
+        self._channels[key] = {
+            "psm": psm,
+            "state": "connected",
+            "our_config_done": False,
+            "their_config_done": False,
+            "connect_pkt": pkt,
+            "config_req_pkt": None,
+            "mtu_local": None,
+            "mtu_remote": None,
+        }
+        self._cid_to_key[local_cid] = key
+        self._cid_to_key[remote_cid] = key
+        return key
+
+    def process(self, pkt):
+        """Process a packet and update channel state.
+
+        Returns a dict with annotation info if this is a tracked L2CAP
+        signaling packet, or None if not relevant.
+
+        Returned dict keys:
+            signal: str  -- signal type (e.g. "Connection Request")
+            psm: int or None
+            local_cid: int or None
+            remote_cid: int or None
+            channel_key: tuple or None
+            detail: str  -- human-readable detail string
+        """
+        if not self._is_l2cap_signaling(pkt):
+            return None
+
+        body = self._body_text(pkt)
+        # Determine signal type from the L2CAP line
+        full = pkt.summary + "\n" + body
+
+        if "Connection Request" in full and \
+                "Disconnection" not in full:
+            return self._handle_conn_request(pkt, body)
+        elif "Connection Response" in full and \
+                "Disconnection" not in full:
+            return self._handle_conn_response(pkt, body)
+        elif "Configuration Request" in full or \
+                "Configure Request" in full:
+            return self._handle_config_request(pkt, body)
+        elif "Configuration Response" in full or \
+                "Configure Response" in full:
+            return self._handle_config_response(pkt, body)
+        elif "Disconnection Request" in full:
+            return self._handle_disconn_request(pkt, body)
+        elif "Disconnection Response" in full:
+            return self._handle_disconn_response(pkt, body)
+
+        return None
+
+    def _handle_conn_request(self, pkt, body):
+        """Handle L2CAP Connection Request."""
+        psm_s = self._extract_field(self._PSM_RE, body)
+        psm = int(psm_s) if psm_s else None
+        src_cid_s = self._extract_field(self._SRC_CID_RE, body)
+        src_cid = int(src_cid_s) if src_cid_s else None
+
+        # Extract ident from the L2CAP header line
+        ident_s = self._extract_field(self._IDENT_RE,
+                                      pkt.summary + "\n" + body)
+        ident = int(ident_s) if ident_s else None
+
+        # PSM filter: skip if not matching
+        if self.psm_filter is not None and psm not in self.psm_filter:
+            return None
+
+        if ident is not None:
+            self._pending_conn[(pkt.direction, ident)] = {
+                "psm": psm,
+                "src_cid": src_cid,
+                "direction": pkt.direction,
+                "pkt": pkt,
+            }
+
+        return {
+            "signal": "Connection Request",
+            "psm": psm,
+            "local_cid": src_cid if pkt.direction == "<" else None,
+            "remote_cid": src_cid if pkt.direction == ">" else None,
+            "channel_key": None,
+            "detail": f"PSM {psm}, CID {src_cid}",
+        }
+
+    def _handle_conn_response(self, pkt, body):
+        """Handle L2CAP Connection Response."""
+        dst_cid_s = self._extract_field(self._DST_CID_RE, body)
+        dst_cid = int(dst_cid_s) if dst_cid_s else None
+        src_cid_s = self._extract_field(self._SRC_CID_RE, body)
+        src_cid = int(src_cid_s) if src_cid_s else None
+        result_s = self._extract_field(self._RESULT_RE, body)
+
+        ident_s = self._extract_field(self._IDENT_RE,
+                                      pkt.summary + "\n" + body)
+        ident = int(ident_s) if ident_s else None
+
+        # Find the matching Connection Request.
+        # Response comes from the opposite direction of the Request.
+        # If pkt.direction == ">", the Request was "<" (we initiated).
+        # If pkt.direction == "<", the Request was ">" (remote initiated).
+        req_dir = "<" if pkt.direction == ">" else ">"
+        pending_key = (req_dir, ident) if ident is not None else None
+        pending = self._pending_conn.get(pending_key) if pending_key \
+            else None
+
+        if pending is None:
+            # No matching request -- could be for an untracked PSM
+            return None
+
+        psm = pending["psm"]
+        is_pending = result_s and "pending" in result_s.lower()
+        is_success = result_s and "successful" in result_s.lower()
+        is_failed = (result_s and not is_pending and not is_success)
+
+        if is_pending:
+            # Intermediate "pending" response; don't consume the request
+            return {
+                "signal": "Connection Response",
+                "psm": psm,
+                "local_cid": None,
+                "remote_cid": None,
+                "channel_key": None,
+                "detail": f"PSM {psm}: pending",
+            }
+
+        # Final response -- consume the pending request
+        del self._pending_conn[pending_key]
+
+        if is_failed:
+            self._issues.append(Diagnostic(
+                f"ERROR: L2CAP Connection for PSM {psm} failed: "
+                f"{result_s}",
+                frame=pkt.frame,
+                timestamp=pkt.timestamp,
+                tags=["L2CAP"]))
+            return {
+                "signal": "Connection Response",
+                "psm": psm,
+                "local_cid": None,
+                "remote_cid": None,
+                "channel_key": None,
+                "detail": f"PSM {psm}: FAILED ({result_s})",
+            }
+
+        # Successful connection -- determine local/remote CIDs.
+        # Direction of the original Request determines who is local:
+        # '<' Request = we initiated, our CID = Source CID in Request
+        if req_dir == "<":
+            # We initiated: Source CID (in Response) = our CID,
+            # Destination CID = remote's CID
+            local_cid = src_cid
+            remote_cid = dst_cid
+        else:
+            # Remote initiated: Source CID (in Response) = remote's,
+            # Destination CID = ours
+            local_cid = dst_cid
+            remote_cid = src_cid
+
+        key = self._register_channel(local_cid, remote_cid, psm, pkt)
+
+        return {
+            "signal": "Connection Response",
+            "psm": psm,
+            "local_cid": local_cid,
+            "remote_cid": remote_cid,
+            "channel_key": key,
+            "detail": f"PSM {psm}: Success "
+                      f"(local={local_cid}, remote={remote_cid})",
+        }
+
+    def _handle_config_request(self, pkt, body):
+        """Handle L2CAP Configure Request."""
+        dst_cid_s = self._extract_field(self._DST_CID_RE, body)
+        dst_cid = int(dst_cid_s) if dst_cid_s else None
+        mtu_s = self._extract_field(self._MTU_RE, body)
+        mtu = int(mtu_s) if mtu_s else None
+
+        ident_s = self._extract_field(self._IDENT_RE,
+                                      pkt.summary + "\n" + body)
+        ident = int(ident_s) if ident_s else None
+
+        # Find channel by destination CID
+        ch_key = self._channel_key_for_cid(dst_cid) if dst_cid else None
+        if ch_key is None:
+            return None  # Not a tracked channel
+
+        ch = self._channels.get(ch_key)
+        if ch is None:
+            return None
+
+        ch["state"] = "configuring"
+
+        # Record pending config request
+        if ident is not None:
+            self._pending_config[(pkt.direction, ident)] = {
+                "dest_cid": dst_cid,
+                "mtu": mtu,
+                "pkt": pkt,
+                "channel_key": ch_key,
+                "psm": ch["psm"],
+            }
+            if ch.get("config_req_pkt") is None:
+                ch["config_req_pkt"] = pkt
+
+        return {
+            "signal": "Configure Request",
+            "psm": ch["psm"],
+            "local_cid": ch_key[0],
+            "remote_cid": ch_key[1],
+            "channel_key": ch_key,
+            "detail": f"PSM {ch['psm']}, dest CID {dst_cid}"
+                      + (f", MTU {mtu}" if mtu else ""),
+        }
+
+    def _handle_config_response(self, pkt, body):
+        """Handle L2CAP Configure Response."""
+        src_cid_s = self._extract_field(self._SRC_CID_RE, body)
+        src_cid = int(src_cid_s) if src_cid_s else None
+        result_s = self._extract_field(self._RESULT_RE, body)
+
+        ident_s = self._extract_field(self._IDENT_RE,
+                                      pkt.summary + "\n" + body)
+        ident = int(ident_s) if ident_s else None
+
+        # Match to pending Configure Request (opposite direction).
+        req_dir = "<" if pkt.direction == ">" else ">"
+        pending_key = (req_dir, ident) if ident is not None else None
+        pending = self._pending_config.get(pending_key) if pending_key \
+            else None
+
+        if pending is None:
+            return None  # Not a tracked config request
+
+        ch_key = pending["channel_key"]
+        ch = self._channels.get(ch_key)
+        if ch is None:
+            return None
+
+        # Consume the pending config request
+        del self._pending_config[pending_key]
+
+        is_success = result_s and "Success" in result_s
+
+        if is_success:
+            # Determine which side's config is now done.
+            # The Request was sent by req_dir; the Response confirms it.
+            # '<' Request = we sent config, so our_config_done = True
+            # '>' Request = they sent config, so their_config_done = True
+            if req_dir == "<":
+                ch["our_config_done"] = True
+                if pending.get("mtu"):
+                    ch["mtu_local"] = pending["mtu"]
+            else:
+                ch["their_config_done"] = True
+                if pending.get("mtu"):
+                    ch["mtu_remote"] = pending["mtu"]
+
+            # Both sides configured => channel is open
+            if ch["our_config_done"] and ch["their_config_done"]:
+                ch["state"] = "open"
+        else:
+            # Config failed/rejected
+            detail = f"PSM {ch['psm']}: Config {result_s}"
+            # Not necessarily fatal -- peer may retry
+            pass
+
+        return {
+            "signal": "Configure Response",
+            "psm": ch["psm"],
+            "local_cid": ch_key[0],
+            "remote_cid": ch_key[1],
+            "channel_key": ch_key,
+            "detail": f"PSM {ch['psm']}: {result_s or '?'}"
+                      + (" -> OPEN" if ch["state"] == "open" else ""),
+        }
+
+    def _handle_disconn_request(self, pkt, body):
+        """Handle L2CAP Disconnection Request."""
+        dst_cid_s = self._extract_field(self._DST_CID_RE, body)
+        dst_cid = int(dst_cid_s) if dst_cid_s else None
+        src_cid_s = self._extract_field(self._SRC_CID_RE, body)
+        src_cid = int(src_cid_s) if src_cid_s else None
+
+        # Find channel by either CID
+        ch_key = None
+        for cid in (dst_cid, src_cid):
+            if cid is not None:
+                ch_key = self._channel_key_for_cid(cid)
+                if ch_key:
+                    break
+
+        if ch_key is None:
+            return None
+
+        ch = self._channels.get(ch_key)
+        if ch is None:
+            return None
+
+        ch["state"] = "disconnecting"
+
+        return {
+            "signal": "Disconnection Request",
+            "psm": ch["psm"],
+            "local_cid": ch_key[0],
+            "remote_cid": ch_key[1],
+            "channel_key": ch_key,
+            "detail": f"PSM {ch['psm']} "
+                      f"(CIDs {ch_key[0]}/{ch_key[1]})",
+        }
+
+    def _handle_disconn_response(self, pkt, body):
+        """Handle L2CAP Disconnection Response."""
+        dst_cid_s = self._extract_field(self._DST_CID_RE, body)
+        dst_cid = int(dst_cid_s) if dst_cid_s else None
+        src_cid_s = self._extract_field(self._SRC_CID_RE, body)
+        src_cid = int(src_cid_s) if src_cid_s else None
+
+        # Find channel by either CID
+        ch_key = None
+        for cid in (dst_cid, src_cid):
+            if cid is not None:
+                ch_key = self._channel_key_for_cid(cid)
+                if ch_key:
+                    break
+
+        if ch_key is None:
+            return None
+
+        ch = self._channels.get(ch_key)
+        if ch is None:
+            return None
+
+        # Move to completed list
+        ch["state"] = "disconnected"
+        self._completed.append(dict(ch, key=ch_key))
+        # Clean up maps
+        del self._channels[ch_key]
+        for cid in ch_key:
+            self._cid_to_key.pop(cid, None)
+
+        return {
+            "signal": "Disconnection Response",
+            "psm": ch["psm"],
+            "local_cid": ch_key[0],
+            "remote_cid": ch_key[1],
+            "channel_key": ch_key,
+            "detail": f"PSM {ch['psm']} disconnected",
+        }
+
+    def get_channel_info(self, cid):
+        """Get channel info dict for a CID, or None."""
+        key = self._cid_to_key.get(cid)
+        if key:
+            return self._channels.get(key)
+        return None
+
+    def diagnostics(self):
+        """Produce diagnostic messages for detected issues.
+
+        Call after all packets have been processed.
+
+        Checks:
+        - Pending Connection Requests with no final Response
+        - Pending Configure Requests with no Response (half-configured)
+        - Channels that never reached "open" state
+        """
+        diags = list(self._issues)
+
+        # Pending connection requests (never got a final response)
+        for (direction, ident), info in self._pending_conn.items():
+            psm = info["psm"]
+            src_cid = info["src_cid"]
+            ref = info["pkt"]
+            diags.append(Diagnostic(
+                f"ERROR: L2CAP Connection Request for PSM {psm} "
+                f"(CID {src_cid}, ident {ident}) never received a "
+                f"final Response",
+                frame=ref.frame,
+                timestamp=ref.timestamp,
+                tags=["L2CAP"]))
+
+        # Pending configure requests (never got a response)
+        for (direction, ident), info in self._pending_config.items():
+            ch_key = info["channel_key"]
+            ch = self._channels.get(ch_key)
+            psm = info.get("psm") or (ch["psm"] if ch else "?")
+            ref = info["pkt"]
+            who = "Our" if direction == "<" else "Remote"
+            diags.append(Diagnostic(
+                f"ERROR: {who} L2CAP Configure Request "
+                f"(PSM {psm}, ident {ident}, dest CID "
+                f"{info['dest_cid']}) never received a Response "
+                f"-- channel half-configured",
+                frame=ref.frame,
+                timestamp=ref.timestamp,
+                tags=["L2CAP"]))
+
+        # Channels still open but never fully configured
+        for ch_key, ch in self._channels.items():
+            if ch["state"] not in ("open", "disconnected",
+                                   "disconnecting"):
+                if not ch["our_config_done"] or \
+                        not ch["their_config_done"]:
+                    our = "done" if ch["our_config_done"] else "MISSING"
+                    their = ("done" if ch["their_config_done"]
+                             else "MISSING")
+                    ref = ch.get("config_req_pkt") or ch["connect_pkt"]
+                    diags.append(Diagnostic(
+                        f"WARNING: L2CAP channel PSM {ch['psm']} "
+                        f"(CIDs {ch_key[0]}/{ch_key[1]}) never "
+                        f"fully configured: our config={our}, "
+                        f"their config={their}",
+                        frame=ref.frame if ref else None,
+                        timestamp=ref.timestamp if ref else None,
+                        tags=["L2CAP"]))
+
+        # Completed channels that were disconnected before being open
+        for ch in self._completed:
+            if not ch["our_config_done"] or \
+                    not ch["their_config_done"]:
+                our = "done" if ch["our_config_done"] else "MISSING"
+                their = "done" if ch["their_config_done"] else "MISSING"
+                ref = ch.get("config_req_pkt") or ch["connect_pkt"]
+                diags.append(Diagnostic(
+                    f"ERROR: L2CAP channel PSM {ch['psm']} "
+                    f"(CIDs {ch['key'][0]}/{ch['key'][1]}) "
+                    f"disconnected before fully configured: "
+                    f"our config={our}, their config={their}",
+                    frame=ref.frame if ref else None,
+                    timestamp=ref.timestamp if ref else None,
+                    tags=["L2CAP"]))
+
+        return diags
+
+
+# ---------------------------------------------------------------------------
 # L2CAP annotator
 # ---------------------------------------------------------------------------
 
 class L2CAPAnnotator(RuleMatchAnnotator):
-    """Annotator for L2CAP channel traces."""
+    """Annotator for L2CAP channel traces.
+
+    Uses L2CAPChannelTracker to maintain channel state and detect
+    lifecycle issues (missing Configure Responses, half-configured
+    channels, etc.).
+    """
 
     name = "l2cap"
+
+    def __init__(self):
+        super().__init__()
+        self._tracker = L2CAPChannelTracker()  # track all PSMs
 
     def _run_hooks(self, pkt):
         s = pkt.summary
         body_text = "\n".join(pkt.body)
 
         if "L2CAP:" in s or "L2CAP:" in body_text:
-            if "Connection Request" in body_text or \
-                    "Connection Request" in s:
-                psm_m = re.search(r"PSM:\s*(\d+)", body_text)
-                psm = psm_m.group(1) if psm_m else "?"
-                self._tag(pkt, "L2CAP",
-                          annotation=f"L2CAP Connect Request PSM={psm}")
-            elif "Connection Response" in body_text or \
-                    "Connection Response" in s:
-                result_m = re.search(r"Result:\s*(.+)", body_text)
-                result = result_m.group(1).strip() if result_m else "?"
-                self._tag(pkt, "L2CAP",
-                          annotation=f"L2CAP Connect Response: {result}")
-                if "Success" not in result:
+            # Feed to tracker for stateful analysis
+            info = self._tracker.process(pkt)
+
+            if info is not None:
+                ann = f"L2CAP {info['signal']}: {info['detail']}"
+                self._tag(pkt, "L2CAP", annotation=ann)
+                # Flag non-success connection responses as errors
+                if info["signal"] == "Connection Response" and \
+                        "FAILED" in info["detail"]:
                     self._tag(pkt, "ERROR")
-            elif "Configuration Request" in body_text:
-                self._tag(pkt, "L2CAP",
-                          annotation="L2CAP Config Request")
-            elif "Configuration Response" in body_text:
-                self._tag(pkt, "L2CAP",
-                          annotation="L2CAP Config Response")
-            elif "Disconnection Request" in body_text:
-                self._tag(pkt, "L2CAP",
-                          annotation="L2CAP Disconnect Request")
-            elif "Command Reject" in body_text:
+                return True
+
+            # Fallback for L2CAP signals the tracker doesn't handle
+            # (e.g. Command Reject, Information Request/Response)
+            if "Command Reject" in body_text:
                 self._tag(pkt, "L2CAP",
                           annotation="L2CAP Command REJECTED")
             else:
@@ -1893,6 +2434,12 @@ class L2CAPAnnotator(RuleMatchAnnotator):
             return True
 
         return False
+
+    def finalize(self, packets):
+        """Run base checks plus L2CAP tracker diagnostics."""
+        diags = super().finalize(packets)
+        diags.extend(self._tracker.diagnostics())
+        return diags
 
 
 # ---------------------------------------------------------------------------
