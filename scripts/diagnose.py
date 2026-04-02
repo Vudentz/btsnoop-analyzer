@@ -59,17 +59,29 @@ def format_diagnostics_markdown(packets, diags):
                     f"| {frame_col} | {ts_col} | {tags_col} | "
                     f":information_source: {msg} |")
             elif "\n" in msg:
-                # Multi-line diagnostics (e.g. STATE tables): use
-                # first line in table, rest as detail below
-                first, rest = msg.split("\n", 1)
+                # Multi-line diagnostics (e.g. STATE tables): keep
+                # everything in one table cell using <br> + inline
+                # code spans so the table is never interrupted.
+                parts = msg.split("\n")
+                first = parts[0]
+                rest_lines = parts[1:]
+                # Dedent continuation lines (strip common leading
+                # whitespace) and render as inline code spans.
+                non_empty = [l for l in rest_lines if l.strip()]
+                if non_empty:
+                    min_indent = min(
+                        len(l) - len(l.lstrip()) for l in non_empty)
+                    cell_parts = [first]
+                    for line in rest_lines:
+                        if line.strip():
+                            cell_parts.append(
+                                f"`{line[min_indent:]}`")
+                    cell = "<br>".join(cell_parts)
+                else:
+                    cell = first
                 lines.append(
                     f"| {frame_col} | {ts_col} | {tags_col} | "
-                    f"{first} |")
-                lines.append("")
-                lines.append("```")
-                lines.append(rest)
-                lines.append("```")
-                lines.append("")
+                    f"{cell} |")
             else:
                 lines.append(
                     f"| {frame_col} | {ts_col} | {tags_col} | "
