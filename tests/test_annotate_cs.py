@@ -850,6 +850,29 @@ class TestCSDetection:
         assert len(cs_results) == 1
         assert cs_results[0].activity_count >= 3
 
+    def test_detect_reflector_no_false_absence(self):
+        """Reflector trace: Security Enable + Config Complete (no Create Config).
+        Detection should NOT report 'CS Security enabled but no Config'."""
+        from detect import detect
+        text = (
+            "< HCI Command: LE CS Security Enable (0x08|0x008c) "
+            "plen 2  #120 [hci0] 3.000\n"
+            "> HCI Event: LE Meta Event (0x3e) plen 6  #125 [hci0] 3.500\n"
+            "      LE CS Security Enable Complete (0x2e)\n"
+            "        Status: Success (0x00)\n"
+            "> HCI Event: LE Meta Event (0x3e) plen 34  #155 [hci0] 5.500\n"
+            "      LE CS Config Complete (0x2f)\n"
+            "        Status: Success (0x00)\n"
+            "        Config ID: 0\n"
+        )
+        results = detect(text)
+        cs_results = [r for r in results if r.area.name == "cs"]
+        assert len(cs_results) == 1
+        # Should NOT have the false absence error
+        for msg in cs_results[0].absence_errors:
+            assert "Config was created" not in msg, \
+                f"False absence for reflector in detect: {msg}"
+
 
 # ===================================================================
 # Tests: Bug fixes (issue #6)
@@ -1330,6 +1353,55 @@ class TestCSGATTProximityHeuristic:
         ann = ChannelSoundingAnnotator()
         ann.annotate(packets)
         assert not att_pkt.tags
+
+    def test_new_btmon_le_acl_format(self):
+        """New btmon 5.86+ format (LE-ACL: Handle N) is recognized."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _make_packet(
+            "<",
+            "LE-ACL: Handle 3 flags 0x00 dlen 5",
+            ["      ATT: Read Request (0x0a) len 2",
+             "        Handle: 0x007f"],
+            frame=2005, ts=243.263)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "CS" in att_pkt.tags
+        assert "RAS" in att_pkt.tags
+        assert "GATT" in att_pkt.tags
+        assert "RAS GATT Read" in att_pkt.annotation
+
+    def test_new_btmon_br_acl_format(self):
+        """New btmon 5.86+ format (BR-ACL: Handle N) is recognized."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _make_packet(
+            ">",
+            "BR-ACL: Handle 3 flags 0x02 dlen 30",
+            ["      ATT: Handle Value Notification (0x1b) len 25",
+             "        Handle: 0x0081",
+             "        Data: 0102030405060708090a0b0c0d0e0f"],
+            frame=2057, ts=244.071)
+        packets = cs_pkts + [att_pkt]
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "RAS" in att_pkt.tags
+        assert "Ranging Data" in att_pkt.annotation
+
+    def test_new_btmon_acl_fallback_format(self):
+        """New btmon 5.86+ fallback format (ACL: Handle N) is recognized."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _make_packet(
+            "<",
+            "ACL: Handle 3 flags 0x00 dlen 7",
+            ["      ATT: Write Request (0x12) len 4",
+             "        Handle: 0x0088",
+             "        Data[2]: 0100"],
+            frame=2024, ts=243.498)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "RAS" in att_pkt.tags
+        assert "CCCD" in att_pkt.annotation
 
 
 # ===================================================================

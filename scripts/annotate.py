@@ -2563,9 +2563,12 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
 
     # -- GATT proximity heuristic --
 
-    # Regex to extract ACL handle from packet summary
+    # Regex to extract ACL handle from packet summary.
+    # Supports both old btmon format ("ACL Data RX/TX: Handle N")
+    # and new format from BlueZ 5.86+ ("LE-ACL: Handle N",
+    # "BR-ACL: Handle N", "ACL: Handle N").
     _ACL_HANDLE_RE = re.compile(
-        r"ACL Data (?:RX|TX): Handle (\d+)")
+        r"(?:ACL Data (?:RX|TX)|(?:LE|BR)-ACL|ACL): Handle (\d+)")
     # CCCD write values that enable notifications (0x0001) or
     # indications (0x0002)
     _CCCD_ENABLE_RE = re.compile(r"Data\[\d+\]: 0[12]00$")

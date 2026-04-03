@@ -32,8 +32,8 @@
     "absence_checks": [
       {
         "prerequisite": "LE CS Security Enable",
-        "expected": "LE CS Create Config",
-        "message": "CS Security enabled but no CS Config was created."
+        "expected": "LE CS C(?:reate Config|onfig Complete)",
+        "message": "CS Security enabled but no CS Config was created or received."
       },
       {
         "prerequisite": "LE CS Create Config",
