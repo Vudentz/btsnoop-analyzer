@@ -191,11 +191,12 @@ def _cs_procedure_enable(config_id=0, enable=True, frame=180, ts=7.0):
 
 
 def _cs_procedure_enable_complete(config_id=0, state=1, frame=185,
-                                   ts=7.5, status="Success"):
+                                    ts=7.5, status="Success",
+                                    decimal_state=False):
     status_str = f"Status: {status} (0x00)" \
         if status == "Success" \
         else f"Status: {status} (0x0c)"
-    state_val = f"0x{state:02x}"
+    state_val = str(state) if decimal_state else f"0x{state:02x}"
     return _make_packet(
         ">",
         "HCI Event: LE Meta Event (0x3e) plen 20",
@@ -848,3 +849,595 @@ class TestCSDetection:
         cs_results = [r for r in results if r.area.name == "cs"]
         assert len(cs_results) == 1
         assert cs_results[0].activity_count >= 3
+
+
+# ===================================================================
+# Tests: Bug fixes (issue #6)
+# ===================================================================
+
+class TestCSBugFixes:
+    """Tests for bug fixes discovered from real-world trace analysis."""
+
+    def test_state_decimal_format(self):
+        """Procedure Enable Complete with decimal State (e.g. 'State: 1')
+        should be parsed correctly, not only hex '0x01'."""
+        ann = ChannelSoundingAnnotator()
+        pkt = _cs_procedure_enable_complete(
+            config_id=0, state=1, decimal_state=True)
+        ann.annotate_packet(pkt)
+        assert ann.saw_procedure_enable_complete is True
+        assert ann.procedure_count == 1
+        assert "Procedure Started" in pkt.annotation
+        assert ann._cs_state[0] == "running"
+
+    def test_state_decimal_stopped(self):
+        """Decimal State: 0 should be parsed as stopped."""
+        ann = ChannelSoundingAnnotator()
+        # Start first
+        pkt1 = _cs_procedure_enable_complete(
+            config_id=0, state=1, decimal_state=True,
+            frame=185, ts=7.5)
+        ann.annotate_packet(pkt1)
+        # Then stop with decimal
+        pkt2 = _cs_procedure_enable_complete(
+            config_id=0, state=0, decimal_state=True,
+            frame=305, ts=15.0)
+        ann.annotate_packet(pkt2)
+        assert "Procedure Stopped" in pkt2.annotation
+        assert ann._cs_state[0] == "configured"
+
+    def test_reflector_no_false_absence(self):
+        """Reflector receives Config Complete without sending Create Config.
+        Should NOT trigger 'no Config was ever created' absence."""
+        ann = ChannelSoundingAnnotator()
+        # Reflector flow: security enable, then Config Complete arrives
+        # (without the reflector sending Create Config)
+        packets = [
+            _cs_security_enable_cmd(frame=120, ts=3.0),
+            _cs_security_enable_complete(frame=125, ts=3.5),
+            _cs_config_complete(config_id=0, frame=155, ts=5.5),
+        ]
+        diags = ann.annotate(packets)
+        absence = [d for d in diags if "ABSENCE:" in str(d)]
+        # Should NOT have "no Config was ever created"
+        assert not any("Config was ever created" in str(d)
+                       for d in absence), \
+            f"False absence for reflector: {absence}"
+
+    def test_connection_handle_lowercase(self):
+        """btmon outputs 'Connection handle:' (lowercase h)."""
+        ann = ChannelSoundingAnnotator()
+        pkt = _make_packet(
+            ">",
+            "HCI Event: LE Meta Event (0x3e) plen 34",
+            ["      LE CS Config Complete (0x2f)",
+             "        Status: Success (0x00)",
+             "        Connection handle: 3",
+             "        Config ID: 0",
+             "        Main Mode Type: 0x01",
+             "        Role: Reflector (0x01)"],
+            frame=2033, ts=243.647)
+        ann.annotate_packet(pkt)
+        assert "CS" in pkt.tags
+        assert 3 in ann._cs_handles
+
+    def test_connection_handle_uppercase(self):
+        """Also handle 'Connection Handle:' (uppercase H)."""
+        ann = ChannelSoundingAnnotator()
+        pkt = _make_packet(
+            ">",
+            "HCI Event: LE Meta Event (0x3e) plen 34",
+            ["      LE CS Config Complete (0x2f)",
+             "        Status: Success (0x00)",
+             "        Connection Handle: 42",
+             "        Config ID: 0",
+             "        Main Mode Type: 0x01"],
+            frame=100, ts=1.0)
+        ann.annotate_packet(pkt)
+        assert 42 in ann._cs_handles
+
+
+# ===================================================================
+# Packet builders for GATT proximity heuristic tests
+# ===================================================================
+
+def _cs_config_complete_connhandle(conn_handle=3, config_id=0,
+                                    frame=155, ts=5.5):
+    """Config Complete with realistic 'Connection handle:' field."""
+    return _make_packet(
+        ">",
+        "HCI Event: LE Meta Event (0x3e) plen 34",
+        ["      LE CS Config Complete (0x2f)",
+         "        Status: Success (0x00)",
+         f"        Connection handle: {conn_handle}",
+         f"        Config ID: {config_id}",
+         "        Action: 1",
+         "        Main Mode Type: 0x01",
+         "        Role: Reflector (0x01)"],
+        frame=frame, ts=ts)
+
+
+def _cs_procedure_enable_complete_connhandle(conn_handle=3, config_id=0,
+                                              state=1, frame=185,
+                                              ts=7.5):
+    """Procedure Enable Complete with decimal State and Connection handle."""
+    return _make_packet(
+        ">",
+        "HCI Event: LE Meta Event (0x3e) plen 20",
+        ["      LE CS Procedure Enable Complete (0x30)",
+         "        Status: Success (0x00)",
+         f"        Connection handle: {conn_handle}",
+         f"        Config ID: {config_id}",
+         f"        State: {state}",
+         "        Tone Antenna Config Selection: 0x01",
+         "        Selected TX Power: 12",
+         "        Subevent Len: 5000 us",
+         "        Subevents Per Event: 2",
+         "        Procedure Count: 100"],
+        frame=frame, ts=ts)
+
+
+def _cs_subevent_result_connhandle(conn_handle=3, steps=8,
+                                    frame=200, ts=8.0):
+    """Subevent Result with Connection handle."""
+    return _make_packet(
+        ">",
+        "HCI Event: LE Meta Event (0x3e) plen 50",
+        ["      LE CS Subevent Result (0x31)",
+         f"        Connection handle: {conn_handle}",
+         "        Config ID: 0",
+         "        Procedure Counter: 0",
+         "        Procedure Done Status: Partial results (0x01)",
+         "        Subevent Done Status: All results complete (0x00)",
+         "        Abort Reason: 0x00",
+         "        Num Antenna Paths: 1",
+         f"        Num Steps Reported: {steps}"],
+        frame=frame, ts=ts)
+
+
+def _att_read_request(handle="0x007f", acl_handle=3,
+                       frame=500, ts=25.0):
+    """ATT Read Request on ACL connection (no UUIDs visible)."""
+    return _make_packet(
+        "<",
+        f"ACL Data TX: Handle {acl_handle} flags 0x00 dlen 5",
+        ["      ATT: Read Request (0x0a) len 2",
+         f"        Handle: {handle}"],
+        frame=frame, ts=ts)
+
+
+def _att_read_response(value="01000000", acl_handle=3,
+                        frame=501, ts=25.1):
+    """ATT Read Response on ACL connection."""
+    return _make_packet(
+        ">",
+        f"ACL Data RX: Handle {acl_handle} flags 0x02 dlen 9",
+        ["      ATT: Read Response (0x0b) len 4",
+         f"        Value: {value}"],
+        frame=frame, ts=ts)
+
+
+def _att_write_request(handle="0x0088", data="0200",
+                        acl_handle=3, frame=510, ts=25.5):
+    """ATT Write Request (e.g. CCCD enable)."""
+    return _make_packet(
+        "<",
+        f"ACL Data TX: Handle {acl_handle} flags 0x00 dlen 7",
+        ["      ATT: Write Request (0x12) len 4",
+         f"        Handle: {handle}",
+         f"        Data[2]: {data}"],
+        frame=frame, ts=ts)
+
+
+def _att_notification(handle="0x0081", acl_handle=3,
+                       frame=520, ts=26.0):
+    """ATT Handle Value Notification (e.g. RAS ranging data)."""
+    return _make_packet(
+        ">",
+        f"ACL Data RX: Handle {acl_handle} flags 0x02 dlen 30",
+        ["      ATT: Handle Value Notification (0x1b) len 25",
+         f"        Handle: {handle}",
+         "        Data: 0102030405060708090a0b0c0d0e0f"],
+        frame=frame, ts=ts)
+
+
+def _att_indication(handle="0x0081", acl_handle=3,
+                     frame=521, ts=26.1):
+    """ATT Handle Value Indication."""
+    return _make_packet(
+        ">",
+        f"ACL Data RX: Handle {acl_handle} flags 0x02 dlen 30",
+        ["      ATT: Handle Value Indication (0x1d) len 25",
+         f"        Handle: {handle}",
+         "        Data: 0102030405060708090a0b0c0d0e0f"],
+        frame=frame, ts=ts)
+
+
+def _att_find_information(acl_handle=3, frame=530, ts=24.0):
+    """ATT Find Information Request (descriptor discovery)."""
+    return _make_packet(
+        "<",
+        f"ACL Data TX: Handle {acl_handle} flags 0x00 dlen 9",
+        ["      ATT: Find Information Request (0x04) len 4",
+         "        Handle Range: 0x0001-0x00ff"],
+        frame=frame, ts=ts)
+
+
+def _att_error_response(handle="0x0090", acl_handle=3,
+                         frame=535, ts=24.5):
+    """ATT Error Response."""
+    return _make_packet(
+        ">",
+        f"ACL Data RX: Handle {acl_handle} flags 0x02 dlen 9",
+        ["      ATT: Error Response (0x01) len 4",
+         f"        Handle: {handle}",
+         "        Error: Attribute Not Found (0x0a)"],
+        frame=frame, ts=ts)
+
+
+def _unrelated_acl_packet(acl_handle=99, frame=600, ts=30.0):
+    """ACL packet on a different connection (should NOT be tagged)."""
+    return _make_packet(
+        ">",
+        f"ACL Data RX: Handle {acl_handle} flags 0x02 dlen 10",
+        ["      ATT: Read Request (0x0a) len 2",
+         "        Handle: 0x0010"],
+        frame=frame, ts=ts)
+
+
+# ===================================================================
+# Tests: GATT proximity heuristic
+# ===================================================================
+
+class TestCSGATTProximityHeuristic:
+    """Tests for the GATT proximity heuristic that infers ATT
+    operations as RAS-related when they share the same ACL connection
+    and occur near CS HCI events."""
+
+    def _build_cs_sequence(self, conn_handle=3, base_ts=243.0):
+        """Build a minimal CS HCI event sequence with connection handle."""
+        return [
+            _cs_config_complete_connhandle(
+                conn_handle=conn_handle, frame=2033,
+                ts=base_ts + 0.6),
+            _cs_procedure_enable_complete_connhandle(
+                conn_handle=conn_handle, state=1,
+                frame=2038, ts=base_ts + 0.85),
+            _cs_subevent_result_connhandle(
+                conn_handle=conn_handle, steps=8,
+                frame=2046, ts=base_ts + 1.0),
+        ]
+
+    def test_att_read_near_cs_tagged(self):
+        """ATT Read Request on same ACL handle within window gets tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_read_request(
+            handle="0x007f", acl_handle=3,
+            frame=2005, ts=243.263)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "CS" in att_pkt.tags
+        assert "RAS" in att_pkt.tags
+        assert "GATT" in att_pkt.tags
+        assert "RAS GATT Read" in att_pkt.annotation
+
+    def test_att_write_cccd_tagged(self):
+        """ATT Write Request with CCCD enable data gets tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        # 0100 = enable notifications
+        att_pkt = _att_write_request(
+            handle="0x0082", data="0100", acl_handle=3,
+            frame=2024, ts=243.498)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "RAS" in att_pkt.tags
+        assert "CCCD" in att_pkt.annotation
+
+    def test_att_write_cccd_indications(self):
+        """CCCD write with 0200 (enable indications) also tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_write_request(
+            handle="0x0088", data="0200", acl_handle=3,
+            frame=2021, ts=243.434)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "CCCD" in att_pkt.annotation
+
+    def test_att_notification_tagged(self):
+        """ATT Handle Value Notification on same connection gets tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_notification(
+            handle="0x0081", acl_handle=3,
+            frame=2057, ts=244.071)
+        packets = cs_pkts + [att_pkt]
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "RAS" in att_pkt.tags
+        assert "Ranging Data" in att_pkt.annotation
+        assert "notification" in att_pkt.annotation
+
+    def test_att_indication_tagged(self):
+        """ATT Handle Value Indication on same connection gets tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_indication(
+            handle="0x0081", acl_handle=3,
+            frame=2060, ts=244.1)
+        packets = cs_pkts + [att_pkt]
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "RAS" in att_pkt.tags
+        assert "indication" in att_pkt.annotation
+
+    def test_different_acl_handle_not_tagged(self):
+        """ATT packet on different ACL connection should NOT be tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _unrelated_acl_packet(
+            acl_handle=99, frame=2010, ts=243.3)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert not att_pkt.tags
+
+    def test_outside_time_window_not_tagged(self):
+        """ATT packet outside time window should NOT be tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        # Way before CS events (more than 5s margin)
+        att_pkt = _att_read_request(
+            acl_handle=3, frame=100, ts=230.0)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert not att_pkt.tags
+
+    def test_outside_after_window_not_tagged(self):
+        """ATT packet after time window should NOT be tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        # Way after CS events (more than 2s margin)
+        att_pkt = _att_read_request(
+            acl_handle=3, frame=9000, ts=250.0)
+        packets = cs_pkts + [att_pkt]
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert not att_pkt.tags
+
+    def test_ras_transfer_count_incremented(self):
+        """Notifications inferred as RAS data bump ras_transfer_count."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        notif1 = _att_notification(
+            acl_handle=3, frame=2057, ts=244.071)
+        notif2 = _att_notification(
+            acl_handle=3, frame=2061, ts=244.081)
+        packets = cs_pkts + [notif1, notif2]
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert ann.ras_transfer_count >= 2
+
+    def test_gatt_count_diagnostic(self):
+        """GATT heuristic summary diagnostic is emitted."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkts = [
+            _att_read_request(acl_handle=3, frame=2005, ts=243.263),
+            _att_write_request(
+                handle="0x0082", data="0100", acl_handle=3,
+                frame=2024, ts=243.498),
+            _att_notification(acl_handle=3, frame=2057, ts=244.071),
+        ]
+        packets = att_pkts + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        diags = ann.annotate(packets)
+        gatt_diags = [d for d in diags
+                      if "proximity heuristic" in str(d)]
+        assert len(gatt_diags) == 1
+        assert "3 GATT operation" in str(gatt_diags[0])
+
+    def test_already_tagged_not_double_tagged(self):
+        """Packets already tagged by UUID-based RAS detection should
+        NOT be re-tagged by the heuristic."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        # This packet has visible UUID 0x185B (RAS Service)
+        ras_pkt = _ras_service_discovery(frame=2010, ts=243.3)
+        # Hack: set ACL handle to 3 in summary for potential match
+        ras_pkt._raw_header = ras_pkt._raw_header.replace(
+            "Handle 2048", "Handle 3")
+        packets = [ras_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        # Should be tagged only once by UUID detection, not by heuristic
+        assert ras_pkt.tags.count("RAS") == 1
+
+    def test_context_priority_for_heuristic(self):
+        """GATT-heuristic-tagged packets should have context priority."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_read_request(
+            acl_handle=3, frame=2005, ts=243.263)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert att_pkt.priority == "context"
+
+    def test_find_information_tagged(self):
+        """ATT Find Information Request classified as descriptor discovery."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_find_information(acl_handle=3, frame=2001, ts=240.0)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "RAS" in att_pkt.tags
+        assert "descriptor discovery" in att_pkt.annotation
+
+    def test_error_response_tagged(self):
+        """ATT Error Response on same connection gets tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_error_response(
+            handle="0x0090", acl_handle=3,
+            frame=2002, ts=240.5)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "RAS" in att_pkt.tags
+        assert "Error Response" in att_pkt.annotation
+
+    def test_read_response_tagged(self):
+        """ATT Read Response gets tagged as RAS GATT Read Response."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_read_response(
+            acl_handle=3, frame=2018, ts=243.359)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert "RAS" in att_pkt.tags
+        assert "Read Response" in att_pkt.annotation
+
+    def test_write_response_not_tagged(self):
+        """ATT Write Response is skipped (not interesting on its own)."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _make_packet(
+            ">",
+            "ACL Data RX: Handle 3 flags 0x02 dlen 5",
+            ["      ATT: Write Response (0x13) len 0"],
+            frame=2025, ts=243.5)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert not att_pkt.tags
+
+    def test_non_att_acl_not_tagged(self):
+        """ACL packet without ATT content should NOT be tagged."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        non_att_pkt = _make_packet(
+            ">",
+            "ACL Data RX: Handle 3 flags 0x02 dlen 20",
+            ["      L2CAP: Connection Request (0x02) ident 1 len 4",
+             "        PSM: 25 (0x0019)",
+             "        Source CID: 64"],
+            frame=2015, ts=243.35)
+        packets = [non_att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert not non_att_pkt.tags
+
+    def test_multiple_connections_isolated(self):
+        """ATT on one connection isn't tagged due to CS on a different one."""
+        # CS events on connection handle 3
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        # ATT on connection handle 5 — should NOT be tagged
+        att_pkt = _att_read_request(
+            acl_handle=5, frame=2005, ts=243.263)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert not att_pkt.tags
+
+
+# ===================================================================
+# Tests: _classify_att_operation unit tests
+# ===================================================================
+
+class TestClassifyATTOperation:
+    """Unit tests for the _classify_att_operation helper."""
+
+    def test_notification(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Handle Value Notification (0x1b) len 25\n"
+                "        Handle: 0x0081\n"
+                "        Data: 0102030405")
+        result = ann._classify_att_operation(body)
+        assert result is not None
+        assert "Ranging Data" in result
+        assert "notification" in result
+        assert "0x0081" in result
+
+    def test_indication(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Handle Value Indication (0x1d) len 25\n"
+                "        Handle: 0x0081")
+        result = ann._classify_att_operation(body)
+        assert "indication" in result
+
+    def test_write_cccd_notifications(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Write Request (0x12) len 4\n"
+                "        Handle: 0x0082\n"
+                "        Data[2]: 0100")
+        result = ann._classify_att_operation(body)
+        assert "CCCD" in result
+
+    def test_write_cccd_indications(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Write Request (0x12) len 4\n"
+                "        Handle: 0x0088\n"
+                "        Data[2]: 0200")
+        result = ann._classify_att_operation(body)
+        assert "CCCD" in result
+
+    def test_write_non_cccd(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Write Request (0x12) len 10\n"
+                "        Handle: 0x0090\n"
+                "        Data[8]: 0102030405060708")
+        result = ann._classify_att_operation(body)
+        assert result is not None
+        assert "GATT Write" in result
+
+    def test_write_response_skipped(self):
+        ann = ChannelSoundingAnnotator()
+        body = "      ATT: Write Response (0x13) len 0"
+        result = ann._classify_att_operation(body)
+        assert result is None
+
+    def test_read_request(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x007f")
+        result = ann._classify_att_operation(body)
+        assert "GATT Read" in result
+        assert "0x007f" in result
+
+    def test_read_response(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Response (0x0b) len 4\n"
+                "        Value: 01000000")
+        result = ann._classify_att_operation(body)
+        assert "Read Response" in result
+
+    def test_read_by_type(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read By Type Request (0x08) len 6\n"
+                "        Handle Range: 0x0001-0x00ff\n"
+                "        UUID: 0x2803")
+        result = ann._classify_att_operation(body)
+        assert "characteristic discovery" in result
+
+    def test_read_by_group_type(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read By Group Type Request (0x10) len 6\n"
+                "        Handle Range: 0x0001-0xffff\n"
+                "        UUID: Primary Service (0x2800)")
+        result = ann._classify_att_operation(body)
+        assert "service discovery" in result
+
+    def test_find_information(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Find Information Request (0x04) len 4\n"
+                "        Handle Range: 0x0001-0x00ff")
+        result = ann._classify_att_operation(body)
+        assert "descriptor discovery" in result
+
+    def test_error_response(self):
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Error Response (0x01) len 4\n"
+                "        Handle: 0x0090\n"
+                "        Error: Attribute Not Found (0x0a)")
+        result = ann._classify_att_operation(body)
+        assert "Error Response" in result
+        assert "0x0090" in result
+
+    def test_unknown_att_returns_none(self):
+        """Unknown ATT operation type returns None."""
+        ann = ChannelSoundingAnnotator()
+        body = "      ATT: Exchange MTU Request (0x02) len 2"
+        result = ann._classify_att_operation(body)
+        assert result is None

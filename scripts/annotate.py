@@ -2521,9 +2521,21 @@ _CS_SUB_ABORT = {
 
 
 class ChannelSoundingAnnotator(RuleMatchAnnotator):
-    """Annotator for Channel Sounding (CS) and Ranging Service (RAS)."""
+    """Annotator for Channel Sounding (CS) and Ranging Service (RAS).
+
+    Includes a GATT proximity heuristic: ATT operations on the same
+    ACL connection as CS HCI events, within a time window around CS
+    activity, are inferred to be RAS/RAP-related even without visible
+    UUIDs.  This is necessary because real traces use handle-based
+    GATT access where UUIDs are resolved during discovery but not
+    repeated in subsequent Read/Write/Notification operations.
+    """
 
     name = "cs"
+
+    # Time margin (seconds) around CS activity to capture GATT ops
+    _GATT_MARGIN_BEFORE = 5.0   # GATT setup happens before CS events
+    _GATT_MARGIN_AFTER = 2.0    # Notifications arrive shortly after
 
     def __init__(self):
         super().__init__()
@@ -2544,7 +2556,144 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
         self.saw_subevent_result = False
         self.saw_ras_discovery = False
 
+        # GATT proximity heuristic state
+        self._cs_handles = set()     # HCI connection handles from CS events
+        self._cs_timestamps = []     # timestamps of all CS HCI events
+        self._gatt_att_count = 0     # ATT packets tagged by heuristic
+
+    # -- GATT proximity heuristic --
+
+    # Regex to extract ACL handle from packet summary
+    _ACL_HANDLE_RE = re.compile(
+        r"ACL Data (?:RX|TX): Handle (\d+)")
+    # CCCD write values that enable notifications (0x0001) or
+    # indications (0x0002)
+    _CCCD_ENABLE_RE = re.compile(r"Data\[\d+\]: 0[12]00$")
+
+    def annotate(self, packets):
+        """Two-pass annotation: CS HCI events first, then GATT heuristic.
+
+        Pass 1: Standard rule + hook annotation tags CS HCI events and
+                 records connection handles and timestamps.
+        Pass 2: Scans untagged ATT packets on the same ACL connection
+                 within a time window around CS activity and infers them
+                 as RAS/RAP-related GATT operations.
+        """
+        # Pass 1: standard annotation
+        for pkt in packets:
+            self.annotate_packet(pkt)
+
+        # Also extract connection handles from packets tagged by
+        # declarative match_rules (which bypass hooks)
+        for pkt in packets:
+            if pkt.tags and "CS" in pkt.tags:
+                body_text = "\n".join(pkt.body)
+                m = self._CONN_HANDLE_RE.search(body_text)
+                if m:
+                    self._cs_handles.add(int(m.group(1)))
+                if pkt.timestamp > 0:
+                    self._cs_timestamps.append(pkt.timestamp)
+
+        # Pass 2: GATT proximity heuristic
+        if self._cs_handles and self._cs_timestamps:
+            self._apply_gatt_heuristic(packets)
+
+        return self.finalize(packets)
+
+    def _apply_gatt_heuristic(self, packets):
+        """Tag ATT operations near CS events as inferred RAS/GATT.
+
+        Since real traces use handle-based GATT access (no visible
+        UUIDs after discovery), we infer that ATT operations on the
+        same ACL connection, within a time window around CS activity,
+        are RAS-related.
+        """
+        cs_min = min(self._cs_timestamps) - self._GATT_MARGIN_BEFORE
+        cs_max = max(self._cs_timestamps) + self._GATT_MARGIN_AFTER
+
+        for pkt in packets:
+            # Skip already-tagged packets
+            if pkt.tags:
+                continue
+            # Only look at ACL data packets with ATT content
+            acl_m = self._ACL_HANDLE_RE.search(pkt.summary)
+            if not acl_m:
+                continue
+            acl_handle = int(acl_m.group(1))
+            if acl_handle not in self._cs_handles:
+                continue
+            # Must be in the CS time window
+            if not (cs_min <= pkt.timestamp <= cs_max):
+                continue
+            # Must contain ATT protocol data
+            body_text = "\n".join(pkt.body)
+            if "ATT:" not in body_text:
+                continue
+
+            # Classify the ATT operation
+            annotation = self._classify_att_operation(body_text)
+            if annotation:
+                self._gatt_att_count += 1
+                self._tag(pkt, ["CS", "RAS", "GATT"],
+                          priority="context",
+                          annotation=annotation)
+
+    def _classify_att_operation(self, body_text):
+        """Classify an ATT operation for annotation.
+
+        Returns an annotation string, or None to skip.
+        """
+        handle_m = re.search(r"Handle:\s*(0x[0-9a-fA-F]+)", body_text)
+        handle = handle_m.group(1) if handle_m else "?"
+
+        if "Handle Value Notification" in body_text:
+            self.ras_transfer_count += 1
+            return f"RAS Ranging Data (notification on {handle})"
+
+        if "Handle Value Indication" in body_text:
+            self.ras_transfer_count += 1
+            return f"RAS Ranging Data (indication on {handle})"
+
+        if "Write Request" in body_text:
+            if self._CCCD_ENABLE_RE.search(body_text):
+                return f"RAS CCCD enable notifications ({handle})"
+            return f"RAS GATT Write ({handle})"
+
+        if "Write Response" in body_text:
+            return None   # response to write, not interesting on its own
+
+        if "Read Request" in body_text:
+            return f"RAS GATT Read ({handle})"
+
+        if "Read Response" in body_text:
+            return f"RAS GATT Read Response"
+
+        if "Read By Type" in body_text:
+            return f"RAS GATT characteristic discovery"
+
+        if "Read By Group Type" in body_text:
+            return f"RAS GATT service discovery"
+
+        if "Find Information" in body_text:
+            return f"RAS GATT descriptor discovery"
+
+        if "Error Response" in body_text:
+            return f"RAS GATT Error Response ({handle})"
+
+        return None
+
     # -- Hooks: stateful CS event processing --
+
+    # Regex for extracting connection handle (btmon uses mixed casing)
+    _CONN_HANDLE_RE = re.compile(
+        r"Connection [Hh]andle:\s*(\d+)", re.MULTILINE)
+
+    def _extract_conn_handle(self, body_text, pkt):
+        """Extract connection handle and record CS activity."""
+        m = self._CONN_HANDLE_RE.search(body_text)
+        if m:
+            self._cs_handles.add(int(m.group(1)))
+        self._cs_timestamps.append(pkt.timestamp)
 
     def _run_hooks(self, pkt):
         s = pkt.summary
@@ -2586,12 +2735,17 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
             (ts, old, new_state, event))
 
     def _handle_config_complete(self, pkt, body_text):
+        self._extract_conn_handle(body_text, pkt)
         config_m = re.search(r"Config ID:\s*(\d+)", body_text)
         config_id = int(config_m.group(1)) if config_m else 0
         status_ok = "Success" in body_text
 
         if status_ok:
             self.saw_config_complete = True
+            # Reflectors receive Config Complete without sending
+            # Create Config, so also mark saw_create_config to avoid
+            # false absence diagnostics.
+            self.saw_create_config = True
             # Extract negotiated timing
             mode_m = re.search(r"Main Mode Type:\s*(0x[0-9a-fA-F]+)",
                                body_text)
@@ -2629,10 +2783,12 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
         return True
 
     def _handle_procedure_enable_complete(self, pkt, body_text):
+        self._extract_conn_handle(body_text, pkt)
         config_m = re.search(r"Config ID:\s*(\d+)", body_text)
-        state_m = re.search(r"State:\s*(0x[0-9a-fA-F]+)", body_text)
+        # btmon may output State as decimal (1) or hex (0x01)
+        state_m = re.search(r"State:\s*(?:0x)?([0-9a-fA-F]+)", body_text)
         config_id = int(config_m.group(1)) if config_m else 0
-        state_val = state_m.group(1) if state_m else "?"
+        state_val = int(state_m.group(1), 16) if state_m else -1
         status_ok = "Success" in body_text
 
         if not status_ok:
@@ -2644,7 +2800,7 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
             return True
 
         self.saw_procedure_enable_complete = True
-        enabled = state_val == "0x01"
+        enabled = state_val == 1
 
         if enabled:
             self.procedure_count += 1
@@ -2672,6 +2828,7 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
         return True
 
     def _handle_subevent_result(self, pkt, body_text):
+        self._extract_conn_handle(body_text, pkt)
         self.saw_subevent_result = True
         self.subevent_count += 1
 
@@ -2807,6 +2964,14 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
                 frame=first_frame,
                 timestamp=first_ts,
                 tags=["CS"]))
+
+        # GATT proximity heuristic summary
+        if self._gatt_att_count > 0:
+            diags.append(Diagnostic(
+                f"NOTE: {self._gatt_att_count} GATT operation(s) "
+                f"inferred as RAS-related by proximity heuristic "
+                f"(same ACL connection, within time window of CS "
+                f"activity)."))
 
         return diags
 
