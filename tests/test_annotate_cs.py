@@ -1144,6 +1144,7 @@ class TestCSGATTProximityHeuristic:
         assert "RAS" in att_pkt.tags
         assert "GATT" in att_pkt.tags
         assert "RAS GATT Read" in att_pkt.annotation
+        assert att_pkt.priority == "key"
 
     def test_att_write_cccd_tagged(self):
         """ATT Write Request with CCCD enable data gets tagged."""
@@ -1157,6 +1158,7 @@ class TestCSGATTProximityHeuristic:
         ann.annotate(packets)
         assert "RAS" in att_pkt.tags
         assert "CCCD" in att_pkt.annotation
+        assert att_pkt.priority == "key"
 
     def test_att_write_cccd_indications(self):
         """CCCD write with 0200 (enable indications) also tagged."""
@@ -1181,6 +1183,7 @@ class TestCSGATTProximityHeuristic:
         assert "RAS" in att_pkt.tags
         assert "Ranging Data" in att_pkt.annotation
         assert "notification" in att_pkt.annotation
+        assert att_pkt.priority == "context"
 
     def test_att_indication_tagged(self):
         """ATT Handle Value Indication on same connection gets tagged."""
@@ -1193,6 +1196,7 @@ class TestCSGATTProximityHeuristic:
         ann.annotate(packets)
         assert "RAS" in att_pkt.tags
         assert "indication" in att_pkt.annotation
+        assert att_pkt.priority == "context"
 
     def test_different_acl_handle_not_tagged(self):
         """ATT packet on different ACL connection should NOT be tagged."""
@@ -1271,11 +1275,20 @@ class TestCSGATTProximityHeuristic:
         # Should be tagged only once by UUID detection, not by heuristic
         assert ras_pkt.tags.count("RAS") == 1
 
-    def test_context_priority_for_heuristic(self):
-        """GATT-heuristic-tagged packets should have context priority."""
+    def test_signaling_priority_for_heuristic(self):
+        """Signaling ATT ops (reads, writes, discovery) should be key."""
         cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
         att_pkt = _att_read_request(
             acl_handle=3, frame=2005, ts=243.263)
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+        assert att_pkt.priority == "key"
+
+    def test_data_priority_for_heuristic(self):
+        """Data ATT ops (notifications, indications) should be context."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+        att_pkt = _att_notification(acl_handle=3, frame=2020, ts=243.4)
         packets = [att_pkt] + cs_pkts
         ann = ChannelSoundingAnnotator()
         ann.annotate(packets)
@@ -1290,6 +1303,7 @@ class TestCSGATTProximityHeuristic:
         ann.annotate(packets)
         assert "RAS" in att_pkt.tags
         assert "descriptor discovery" in att_pkt.annotation
+        assert att_pkt.priority == "key"
 
     def test_error_response_tagged(self):
         """ATT Error Response on same connection gets tagged."""
@@ -1302,9 +1316,10 @@ class TestCSGATTProximityHeuristic:
         ann.annotate(packets)
         assert "RAS" in att_pkt.tags
         assert "Error Response" in att_pkt.annotation
+        assert att_pkt.priority == "key"
 
     def test_read_response_tagged(self):
-        """ATT Read Response gets tagged as RAS GATT Read Response."""
+        """ATT Read Response gets tagged as context priority."""
         cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
         att_pkt = _att_read_response(
             acl_handle=3, frame=2018, ts=243.359)
@@ -1313,6 +1328,7 @@ class TestCSGATTProximityHeuristic:
         ann.annotate(packets)
         assert "RAS" in att_pkt.tags
         assert "Read Response" in att_pkt.annotation
+        assert att_pkt.priority == "context"
 
     def test_write_response_not_tagged(self):
         """ATT Write Response is skipped (not interesting on its own)."""
@@ -1418,32 +1434,37 @@ class TestClassifyATTOperation:
                 "        Data: 0102030405")
         result = ann._classify_att_operation(body)
         assert result is not None
-        assert "Ranging Data" in result
-        assert "notification" in result
-        assert "0x0081" in result
+        annotation, priority = result
+        assert "Ranging Data" in annotation
+        assert "notification" in annotation
+        assert "0x0081" in annotation
+        assert priority == "context"
 
     def test_indication(self):
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Handle Value Indication (0x1d) len 25\n"
                 "        Handle: 0x0081")
-        result = ann._classify_att_operation(body)
-        assert "indication" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "indication" in annotation
+        assert priority == "context"
 
     def test_write_cccd_notifications(self):
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Write Request (0x12) len 4\n"
                 "        Handle: 0x0082\n"
                 "        Data[2]: 0100")
-        result = ann._classify_att_operation(body)
-        assert "CCCD" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "CCCD" in annotation
+        assert priority == "key"
 
     def test_write_cccd_indications(self):
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Write Request (0x12) len 4\n"
                 "        Handle: 0x0088\n"
                 "        Data[2]: 0200")
-        result = ann._classify_att_operation(body)
-        assert "CCCD" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "CCCD" in annotation
+        assert priority == "key"
 
     def test_write_non_cccd(self):
         ann = ChannelSoundingAnnotator()
@@ -1452,7 +1473,9 @@ class TestClassifyATTOperation:
                 "        Data[8]: 0102030405060708")
         result = ann._classify_att_operation(body)
         assert result is not None
-        assert "GATT Write" in result
+        annotation, priority = result
+        assert "GATT Write" in annotation
+        assert priority == "key"
 
     def test_write_response_skipped(self):
         ann = ChannelSoundingAnnotator()
@@ -1464,48 +1487,54 @@ class TestClassifyATTOperation:
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Read Request (0x0a) len 2\n"
                 "        Handle: 0x007f")
-        result = ann._classify_att_operation(body)
-        assert "GATT Read" in result
-        assert "0x007f" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "GATT Read" in annotation
+        assert "0x007f" in annotation
+        assert priority == "key"
 
     def test_read_response(self):
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Read Response (0x0b) len 4\n"
                 "        Value: 01000000")
-        result = ann._classify_att_operation(body)
-        assert "Read Response" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "Read Response" in annotation
+        assert priority == "context"
 
     def test_read_by_type(self):
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Read By Type Request (0x08) len 6\n"
                 "        Handle Range: 0x0001-0x00ff\n"
                 "        UUID: 0x2803")
-        result = ann._classify_att_operation(body)
-        assert "characteristic discovery" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "characteristic discovery" in annotation
+        assert priority == "key"
 
     def test_read_by_group_type(self):
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Read By Group Type Request (0x10) len 6\n"
                 "        Handle Range: 0x0001-0xffff\n"
                 "        UUID: Primary Service (0x2800)")
-        result = ann._classify_att_operation(body)
-        assert "service discovery" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "service discovery" in annotation
+        assert priority == "key"
 
     def test_find_information(self):
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Find Information Request (0x04) len 4\n"
                 "        Handle Range: 0x0001-0x00ff")
-        result = ann._classify_att_operation(body)
-        assert "descriptor discovery" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "descriptor discovery" in annotation
+        assert priority == "key"
 
     def test_error_response(self):
         ann = ChannelSoundingAnnotator()
         body = ("      ATT: Error Response (0x01) len 4\n"
                 "        Handle: 0x0090\n"
                 "        Error: Attribute Not Found (0x0a)")
-        result = ann._classify_att_operation(body)
-        assert "Error Response" in result
-        assert "0x0090" in result
+        annotation, priority = ann._classify_att_operation(body)
+        assert "Error Response" in annotation
+        assert "0x0090" in annotation
+        assert priority == "key"
 
     def test_unknown_att_returns_none(self):
         """Unknown ATT operation type returns None."""

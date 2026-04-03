@@ -2634,54 +2634,62 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
                 continue
 
             # Classify the ATT operation
-            annotation = self._classify_att_operation(body_text)
-            if annotation:
+            result = self._classify_att_operation(body_text)
+            if result:
+                annotation, priority = result
                 self._gatt_att_count += 1
                 self._tag(pkt, ["CS", "RAS", "GATT"],
-                          priority="context",
+                          priority=priority,
                           annotation=annotation)
 
     def _classify_att_operation(self, body_text):
-        """Classify an ATT operation for annotation.
+        """Classify an ATT operation for annotation and priority.
 
-        Returns an annotation string, or None to skip.
+        Returns (annotation, priority) tuple, or None to skip.
+        Signaling operations (writes, discovery, reads, errors) are
+        ``key`` so they appear in the Key Frames table and get full
+        body text in the prefilter.  Bulk data (notifications and
+        indications) are ``context`` to avoid flooding.
         """
         handle_m = re.search(r"Handle:\s*(0x[0-9a-fA-F]+)", body_text)
         handle = handle_m.group(1) if handle_m else "?"
 
         if "Handle Value Notification" in body_text:
             self.ras_transfer_count += 1
-            return f"RAS Ranging Data (notification on {handle})"
+            return (f"RAS Ranging Data (notification on {handle})",
+                    "context")
 
         if "Handle Value Indication" in body_text:
             self.ras_transfer_count += 1
-            return f"RAS Ranging Data (indication on {handle})"
+            return (f"RAS Ranging Data (indication on {handle})",
+                    "context")
 
         if "Write Request" in body_text:
             if self._CCCD_ENABLE_RE.search(body_text):
-                return f"RAS CCCD enable notifications ({handle})"
-            return f"RAS GATT Write ({handle})"
+                return (f"RAS CCCD enable notifications ({handle})",
+                        "key")
+            return (f"RAS GATT Write ({handle})", "key")
 
         if "Write Response" in body_text:
             return None   # response to write, not interesting on its own
 
         if "Read Request" in body_text:
-            return f"RAS GATT Read ({handle})"
+            return (f"RAS GATT Read ({handle})", "key")
 
         if "Read Response" in body_text:
-            return f"RAS GATT Read Response"
+            return (f"RAS GATT Read Response", "context")
 
         if "Read By Type" in body_text:
-            return f"RAS GATT characteristic discovery"
+            return (f"RAS GATT characteristic discovery", "key")
 
         if "Read By Group Type" in body_text:
-            return f"RAS GATT service discovery"
+            return (f"RAS GATT service discovery", "key")
 
         if "Find Information" in body_text:
-            return f"RAS GATT descriptor discovery"
+            return (f"RAS GATT descriptor discovery", "key")
 
         if "Error Response" in body_text:
-            return f"RAS GATT Error Response ({handle})"
+            return (f"RAS GATT Error Response ({handle})", "key")
 
         return None
 
