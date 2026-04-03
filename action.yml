@@ -21,7 +21,7 @@ inputs:
       Connection issues, Controller enumeration, Pairing / Security,
       GATT discovery, Audio, Audio / LE Audio, Audio / A2DP,
       Audio / HFP, L2CAP channel issues, Advertising / Scanning,
-      Disconnection analysis
+      Disconnection analysis, Channel Sounding
     required: false
     default: 'General (full analysis)'
   anonymize:
@@ -144,6 +144,7 @@ runs:
           "L2CAP channel issues")    LABEL="l2cap" ;;
           "Advertising / Scanning")  LABEL="advertising" ;;
           "Disconnection analysis")  LABEL="disconnection" ;;
+          "Channel Sounding")        LABEL="channel-sounding" ;;
           *) echo "Unknown focus area: $FOCUS, skipping label"; exit 0 ;;
         esac
 

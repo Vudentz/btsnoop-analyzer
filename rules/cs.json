@@ -1,0 +1,291 @@
+{
+  "name": "cs",
+  "focus": "Channel Sounding",
+
+  "detect": {
+    "activity": [
+      "LE CS Read Local Supported Capabilities",
+      "LE CS Read Remote Supported Capabilities",
+      "LE CS Security Enable",
+      "LE CS Set Default Settings",
+      "LE CS Create Config",
+      "LE CS Config Complete",
+      "LE CS Remove Config",
+      "LE CS Set Procedure Parameters",
+      "LE CS Procedure Enable",
+      "LE CS Subevent Result",
+      "LE CS Set Channel Classification",
+      "LE CS Read Remote FAE",
+      "LE CS Write Cached Remote",
+      "LE CS Test",
+      "RAS Features",
+      "Ranging Data"
+    ],
+    "errors": [
+      "LE CS Security Enable Complete.*Status:(?!.*Success)",
+      "LE CS Config Complete.*Status:(?!.*Success)",
+      "LE CS Procedure Enable.*Status:(?!.*Success)",
+      "LE CS Read Remote Supported Capabilities Complete.*Status:(?!.*Success)",
+      "LE CS Read Remote FAE Table Complete.*Status:(?!.*Success)",
+      "Abort Reason:(?!.*No abort|.*0x00)"
+    ],
+    "absence_checks": [
+      {
+        "prerequisite": "LE CS Security Enable",
+        "expected": "LE CS Create Config",
+        "message": "CS Security enabled but no CS Config was created."
+      },
+      {
+        "prerequisite": "LE CS Create Config",
+        "expected": "LE CS Procedure Enable",
+        "message": "CS Config created but Procedure Enable never sent."
+      }
+    ]
+  },
+
+  "annotate": {
+    "match_rules": [
+      {
+        "id": "cs_read_local_caps",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Read Local Supported Capabilities"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Read Local Capabilities",
+        "set_flag": "saw_read_local_caps",
+        "exclusive": true
+      },
+      {
+        "id": "cs_read_local_caps_complete",
+        "direction": ">",
+        "match": {"field": "full", "all_of": ["LE CS Read Local Supported Capabilities", "Command Complete"]},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Local Capabilities: {roles} modes={modes} antennas={antennas}",
+        "extract": {
+          "roles": {"pattern": "Roles Supported:.*?(?:\\n\\s+((?:Initiator|Reflector)[\\s\\S]*?))(?=\\n\\s+\\S)", "field": "body", "default": "?"},
+          "modes": {"pattern": "Modes Supported:\\s*(0x[0-9a-fA-F]+)", "field": "body", "default": "?"},
+          "antennas": {"pattern": "Num Antennas Supported:\\s*(\\d+)", "field": "body", "default": "?"}
+        },
+        "exclusive": true
+      },
+      {
+        "id": "cs_read_remote_caps_cmd",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Read Remote Supported Capabilities"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Read Remote Capabilities (request)",
+        "set_flag": "saw_read_remote_caps",
+        "exclusive": true
+      },
+      {
+        "id": "cs_read_remote_caps_complete_success",
+        "direction": ">",
+        "match": {"field": "full", "all_of": ["LE CS Read Remote Supported Capabilities Complete", "Success"]},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Remote Capabilities: received",
+        "set_flag": "saw_remote_caps_complete",
+        "exclusive": true
+      },
+      {
+        "id": "cs_read_remote_caps_complete_fail",
+        "direction": ">",
+        "match": {"field": "full", "contains": "LE CS Read Remote Supported Capabilities Complete", "not_contains": "Success"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Remote Capabilities FAILED: {status}",
+        "extract": {
+          "status": {"pattern": "Status:\\s*(.+)", "field": "body", "default": "?"}
+        },
+        "exclusive": true
+      },
+      {
+        "id": "cs_security_enable_cmd",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Security Enable"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Security Enable (request)",
+        "set_flag": "saw_security_enable",
+        "exclusive": true
+      },
+      {
+        "id": "cs_security_enable_success",
+        "direction": ">",
+        "match": {"field": "full", "all_of": ["LE CS Security Enable Complete", "Success"]},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Security Enable: Success",
+        "set_flag": "saw_security_complete",
+        "exclusive": true
+      },
+      {
+        "id": "cs_security_enable_fail",
+        "direction": ">",
+        "match": {"field": "full", "contains": "LE CS Security Enable Complete", "not_contains": "Success"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Security Enable FAILED: {status}",
+        "extract": {
+          "status": {"pattern": "Status:\\s*(.+)", "field": "body", "default": "?"}
+        },
+        "exclusive": true
+      },
+      {
+        "id": "cs_default_settings",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Set Default Settings"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Set Default Settings: roles={roles} antenna={antenna} tx_power={tx_power}",
+        "extract": {
+          "roles": {"pattern": "Role Enable:\\s*(0x[0-9a-fA-F]+)", "field": "body", "default": "?"},
+          "antenna": {"pattern": "CS Sync Antenna Selection:\\s*(0x[0-9a-fA-F]+)", "field": "body", "default": "?"},
+          "tx_power": {"pattern": "Max TX Power:\\s*([\\-\\d]+)", "field": "body", "default": "?"}
+        },
+        "set_flag": "saw_default_settings",
+        "exclusive": true
+      },
+      {
+        "id": "cs_read_remote_fae_cmd",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Read Remote FAE Table"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Read Remote FAE Table (request)",
+        "set_flag": "saw_fae_table",
+        "exclusive": true
+      },
+      {
+        "id": "cs_read_remote_fae_complete",
+        "direction": ">",
+        "match": {"field": "full", "contains": "LE CS Read Remote FAE Table Complete"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Remote FAE Table: received",
+        "exclusive": true
+      },
+      {
+        "id": "cs_write_cached_caps",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Write Cached Remote Supported Capabilities"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Write Cached Remote Capabilities",
+        "exclusive": true
+      },
+      {
+        "id": "cs_channel_classification",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Set Channel Classification"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Set Channel Classification",
+        "set_flag": "saw_channel_classification",
+        "exclusive": true
+      },
+      {
+        "id": "cs_create_config_cmd",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Create Config"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Create Config: id={config_id} mode={mode} role={role}",
+        "extract": {
+          "config_id": {"pattern": "Config ID:\\s*(\\d+)", "field": "body", "default": "?"},
+          "mode": {"pattern": "Main Mode Type:\\s*(0x[0-9a-fA-F]+)", "field": "body", "default": "?"},
+          "role": {"pattern": "Role:\\s*(.+?)\\s*(?:\\(|$)", "field": "body", "default": "?"}
+        },
+        "set_flag": "saw_create_config",
+        "exclusive": true
+      },
+      {
+        "id": "cs_remove_config",
+        "match": {"field": "full", "contains": "LE CS Remove Config"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Remove Config: id={config_id}",
+        "extract": {
+          "config_id": {"pattern": "Config ID:\\s*(\\d+)", "field": "body", "default": "?"}
+        },
+        "exclusive": true
+      },
+      {
+        "id": "cs_set_proc_params",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Set Procedure Parameters"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Set Procedure Parameters: id={config_id} max_len={max_len} count={count}",
+        "extract": {
+          "config_id": {"pattern": "Config ID:\\s*(\\d+)", "field": "body", "default": "?"},
+          "max_len": {"pattern": "Max Procedure Len:\\s*(\\d+)", "field": "body", "default": "?"},
+          "count": {"pattern": "Max Procedure Count:\\s*(\\d+)", "field": "body", "default": "?"}
+        },
+        "set_flag": "saw_set_proc_params",
+        "exclusive": true
+      },
+      {
+        "id": "cs_test_cmd",
+        "direction": "<",
+        "match": {"field": "full", "contains": "LE CS Test"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Test: mode={mode} role={role}",
+        "extract": {
+          "mode": {"pattern": "Main Mode Type:\\s*(0x[0-9a-fA-F]+)", "field": "body", "default": "?"},
+          "role": {"pattern": "Role:\\s*(.+?)\\s*(?:\\(|$)", "field": "body", "default": "?"}
+        },
+        "set_flag": "saw_cs_test",
+        "exclusive": true
+      },
+      {
+        "id": "cs_test_end",
+        "match": {"field": "full", "contains": "LE CS Test End"},
+        "tags": ["CS", "HCI"],
+        "annotation": "CS Test End",
+        "exclusive": true
+      }
+    ],
+    "hooks": ["cs_config_complete", "cs_procedure_enable", "cs_subevent_results", "cs_ras"]
+  },
+
+  "diagnose": {
+    "absence_checks": [
+      {
+        "condition_flag": "saw_security_enable",
+        "missing_flag": "saw_security_complete",
+        "message": "CS Security Enable sent but Security Enable Complete (success) never received -- connection may lack encryption or remote does not support CS."
+      },
+      {
+        "condition_flag": "saw_security_complete",
+        "missing_flag": "saw_create_config",
+        "message": "CS Security Enable succeeded but no Config was ever created -- setup may be incomplete."
+      },
+      {
+        "condition_flag": "saw_create_config",
+        "missing_flag": "saw_config_complete",
+        "message": "CS Create Config sent but Config Complete (success) never received -- parameters may be incompatible with remote capabilities."
+      },
+      {
+        "condition_flag": "saw_set_proc_params",
+        "missing_flag": "saw_procedure_enable",
+        "message": "CS Procedure Parameters set but Procedure Enable never sent."
+      },
+      {
+        "condition_flag": "saw_procedure_enable",
+        "missing_flag": "saw_procedure_enable_complete",
+        "message": "CS Procedure Enable sent but Procedure Enable Complete never received."
+      },
+      {
+        "condition_flag": "saw_procedure_enable",
+        "missing_flag": "saw_subevent_result",
+        "message": "CS Procedure enabled but no Subevent Results received -- procedure may have been aborted or device out of range."
+      }
+    ],
+    "notes": [
+      {
+        "condition": {"counter": "subevent_count", "op": "gt", "value": 0},
+        "message": "NOTE: {subevent_count} CS subevent result(s) received across {procedure_count} procedure(s)."
+      },
+      {
+        "condition": {"counter": "abort_count", "op": "gt", "value": 0},
+        "message": "NOTE: {abort_count} CS subevent(s) or procedure(s) were aborted."
+      },
+      {
+        "condition": {"counter": "ras_transfer_count", "op": "gt", "value": 0},
+        "message": "NOTE: {ras_transfer_count} RAS ranging data transfer(s) detected."
+      },
+      {
+        "condition": {"flag": "saw_cs_test", "value": true},
+        "message": "NOTE: CS Test mode was used (no remote device required)."
+      }
+    ],
+    "hooks": []
+  }
+}

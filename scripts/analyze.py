@@ -181,6 +181,7 @@ FOCUS_DOCS = {
     "L2CAP channel issues": ["btmon-l2cap.rst"],
     "Advertising / Scanning": ["btmon-advertising.rst"],
     "Disconnection analysis": ["btmon-connections.rst"],
+    "Channel Sounding": ["btmon-cs.rst"],
 }
 
 
@@ -207,6 +208,10 @@ _FOCUS_ALIASES = {
     "disconnect":                        "Disconnection analysis",
     "disconnection":                     "Disconnection analysis",
     "general":                           "General (full analysis)",
+    "channel sounding":                  "Channel Sounding",
+    "cs":                                "Channel Sounding",
+    "ranging":                           "Channel Sounding",
+    "ras":                               "Channel Sounding",
 }
 
 

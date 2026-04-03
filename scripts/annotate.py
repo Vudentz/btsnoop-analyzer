@@ -2483,6 +2483,335 @@ class HCIInitAnnotator(RuleMatchAnnotator):
 
 
 # ---------------------------------------------------------------------------
+# Channel Sounding annotator
+# ---------------------------------------------------------------------------
+
+# RAS (Ranging Service) GATT UUIDs
+_RAS_SERVICE_UUID = "0x185B"
+_RAS_UUIDS = {
+    "0x2C14": "RAS Features",
+    "0x2C15": "RAS Real-time Ranging Data",
+    "0x2C16": "RAS On-demand Ranging Data",
+    "0x2C17": "RAS Control Point",
+    "0x2C18": "RAS Ranging Data Ready",
+    "0x2C19": "RAS Ranging Data Overwritten",
+}
+
+# CS state machine states (per config_id)
+_CS_IDLE = "idle"
+_CS_CONFIGURED = "configured"
+_CS_PARAMS_SET = "params_set"
+_CS_RUNNING = "running"
+
+# CS abort reason decode tables (4-bit nibbles)
+_CS_PROC_ABORT = {
+    0x00: "No abort",
+    0x01: "Aborted by host/remote",
+    0x02: "Channel map too small (<15)",
+    0x03: "Channel map update passed",
+    0x0F: "Unspecified",
+}
+_CS_SUB_ABORT = {
+    0x00: "No abort",
+    0x01: "Aborted by host/remote",
+    0x02: "No CS_SYNC (Mode 0) received",
+    0x03: "Scheduling conflict",
+    0x0F: "Unspecified",
+}
+
+
+class ChannelSoundingAnnotator(RuleMatchAnnotator):
+    """Annotator for Channel Sounding (CS) and Ranging Service (RAS)."""
+
+    name = "cs"
+
+    def __init__(self):
+        super().__init__()
+        # CS state machine per config_id
+        self._cs_state = {}          # config_id -> state string
+        self._cs_transitions = {}    # config_id -> [(ts, old, new, event)]
+
+        # Counters for diagnostics
+        self.procedure_count = 0
+        self.subevent_count = 0
+        self.abort_count = 0
+        self.ras_transfer_count = 0
+
+        # Additional flags (beyond those set by match_rules)
+        self.saw_config_complete = False
+        self.saw_procedure_enable = False
+        self.saw_procedure_enable_complete = False
+        self.saw_subevent_result = False
+        self.saw_ras_discovery = False
+
+    # -- Hooks: stateful CS event processing --
+
+    def _run_hooks(self, pkt):
+        s = pkt.summary
+        body_text = "\n".join(pkt.body)
+
+        # CS Config Complete (async event after Create Config)
+        if "LE CS Config Complete" in body_text and pkt.direction == ">":
+            return self._handle_config_complete(pkt, body_text)
+
+        # CS Procedure Enable/Disable command
+        if "LE CS Procedure Enable" in s and pkt.direction == "<":
+            return self._handle_procedure_enable_cmd(pkt, body_text)
+
+        # CS Procedure Enable Complete (async event)
+        if "LE CS Procedure Enable Complete" in body_text \
+                and pkt.direction == ">":
+            return self._handle_procedure_enable_complete(pkt, body_text)
+
+        # CS Subevent Result / Subevent Result Continue
+        if "LE CS Subevent Result" in body_text and pkt.direction == ">":
+            return self._handle_subevent_result(pkt, body_text)
+
+        # RAS GATT characteristics
+        if any(uuid in body_text for uuid in _RAS_UUIDS) \
+                or _RAS_SERVICE_UUID in body_text:
+            return self._handle_ras(pkt, body_text)
+
+        return False
+
+    def _get_state(self, config_id):
+        return self._cs_state.get(config_id, _CS_IDLE)
+
+    def _transition(self, config_id, new_state, event, ts):
+        old = self._get_state(config_id)
+        self._cs_state[config_id] = new_state
+        if config_id not in self._cs_transitions:
+            self._cs_transitions[config_id] = []
+        self._cs_transitions[config_id].append(
+            (ts, old, new_state, event))
+
+    def _handle_config_complete(self, pkt, body_text):
+        config_m = re.search(r"Config ID:\s*(\d+)", body_text)
+        config_id = int(config_m.group(1)) if config_m else 0
+        status_ok = "Success" in body_text
+
+        if status_ok:
+            self.saw_config_complete = True
+            # Extract negotiated timing
+            mode_m = re.search(r"Main Mode Type:\s*(0x[0-9a-fA-F]+)",
+                               body_text)
+            role_m = re.search(r"Role:\s*(.+?)(?:\s*\(|$)", body_text,
+                               re.MULTILINE)
+            mode = mode_m.group(1) if mode_m else "?"
+            role = role_m.group(1).strip() if role_m else "?"
+            self._tag(pkt, ["CS", "HCI"],
+                      annotation=f"CS Config Complete: id={config_id} "
+                                 f"mode={mode} role={role}")
+            self._transition(config_id, _CS_CONFIGURED,
+                             "Config Complete", pkt.timestamp)
+        else:
+            status_m = re.search(r"Status:\s*(.+)", body_text)
+            status = status_m.group(1).strip() if status_m else "?"
+            self._tag(pkt, ["CS", "HCI"],
+                      annotation=f"CS Config Complete FAILED: "
+                                 f"id={config_id} {status}")
+        return True
+
+    def _handle_procedure_enable_cmd(self, pkt, body_text):
+        config_m = re.search(r"Config ID:\s*(\d+)", body_text)
+        enable_m = re.search(r"Enable:\s*(0x[0-9a-fA-F]+)", body_text)
+        config_id = int(config_m.group(1)) if config_m else 0
+        enable = enable_m.group(1) if enable_m else "?"
+        enabled = enable != "0x00"
+        self.saw_procedure_enable = True
+
+        if enabled:
+            self._tag(pkt, ["CS", "HCI"],
+                      annotation=f"CS Procedure Enable: id={config_id}")
+        else:
+            self._tag(pkt, ["CS", "HCI"],
+                      annotation=f"CS Procedure Disable: id={config_id}")
+        return True
+
+    def _handle_procedure_enable_complete(self, pkt, body_text):
+        config_m = re.search(r"Config ID:\s*(\d+)", body_text)
+        state_m = re.search(r"State:\s*(0x[0-9a-fA-F]+)", body_text)
+        config_id = int(config_m.group(1)) if config_m else 0
+        state_val = state_m.group(1) if state_m else "?"
+        status_ok = "Success" in body_text
+
+        if not status_ok:
+            status_m = re.search(r"Status:\s*(.+)", body_text)
+            status = status_m.group(1).strip() if status_m else "?"
+            self._tag(pkt, ["CS", "HCI"],
+                      annotation=f"CS Procedure Enable FAILED: "
+                                 f"id={config_id} {status}")
+            return True
+
+        self.saw_procedure_enable_complete = True
+        enabled = state_val == "0x01"
+
+        if enabled:
+            self.procedure_count += 1
+            # Extract scheduling details
+            count_m = re.search(r"Procedure Count:\s*(\d+)", body_text)
+            sub_m = re.search(r"Subevents Per Event:\s*(\d+)", body_text)
+            pwr_m = re.search(r"Selected TX Power:\s*([\-\d]+)",
+                              body_text)
+            count = count_m.group(1) if count_m else "?"
+            subs = sub_m.group(1) if sub_m else "?"
+            pwr = pwr_m.group(1) if pwr_m else "?"
+            self._tag(pkt, ["CS", "HCI"],
+                      annotation=f"CS Procedure Started: id={config_id} "
+                                 f"count={count} subs/evt={subs} "
+                                 f"tx_pwr={pwr}")
+            self._transition(config_id, _CS_RUNNING,
+                             "Procedure Enable Complete (state=1)",
+                             pkt.timestamp)
+        else:
+            self._tag(pkt, ["CS", "HCI"],
+                      annotation=f"CS Procedure Stopped: id={config_id}")
+            self._transition(config_id, _CS_CONFIGURED,
+                             "Procedure Enable Complete (state=0)",
+                             pkt.timestamp)
+        return True
+
+    def _handle_subevent_result(self, pkt, body_text):
+        self.saw_subevent_result = True
+        self.subevent_count += 1
+
+        is_continue = "Subevent Result Continue" in body_text
+
+        # Extract key fields
+        steps_m = re.search(r"Num Steps Reported:\s*(\d+)", body_text)
+        proc_done_m = re.search(
+            r"Procedure Done Status:\s*(.+?)(?:\s*\(|$)",
+            body_text, re.MULTILINE)
+        abort_m = re.search(r"Abort Reason:\s*(0x[0-9a-fA-F]+)",
+                            body_text)
+
+        steps = steps_m.group(1) if steps_m else "?"
+        proc_done = proc_done_m.group(1).strip() if proc_done_m else "?"
+
+        # Check for aborts
+        abort_detail = ""
+        if abort_m:
+            abort_val = int(abort_m.group(1), 16)
+            proc_abort = abort_val & 0x0F
+            sub_abort = (abort_val >> 4) & 0x0F
+            if proc_abort != 0 or sub_abort != 0:
+                self.abort_count += 1
+                parts = []
+                if proc_abort != 0:
+                    parts.append(f"proc={_CS_PROC_ABORT.get(proc_abort, '?')}")
+                if sub_abort != 0:
+                    parts.append(f"sub={_CS_SUB_ABORT.get(sub_abort, '?')}")
+                abort_detail = " ABORT: " + ", ".join(parts)
+
+        kind = "Continue" if is_continue else "Result"
+
+        # Only tag key frames for first result, aborts, and procedure-done
+        if abort_detail or "All results complete" in proc_done \
+                or self.subevent_count <= 3:
+            self._tag(pkt, ["CS", "HCI"],
+                      annotation=f"CS Subevent {kind}: "
+                                 f"{steps} steps{abort_detail}")
+        else:
+            # Mark as context to avoid flooding key frames table
+            self._tag(pkt, ["CS"], priority="context",
+                      annotation=f"CS Subevent {kind}: {steps} steps")
+        return True
+
+    def _handle_ras(self, pkt, body_text):
+        # RAS Service discovery
+        if _RAS_SERVICE_UUID in body_text:
+            self.saw_ras_discovery = True
+            self._tag(pkt, ["CS", "RAS", "GATT"],
+                      annotation="RAS Service discovered (UUID 0x185B)")
+            return True
+
+        # RAS characteristic operations
+        for uuid, name in _RAS_UUIDS.items():
+            if uuid not in body_text:
+                continue
+
+            if uuid == "0x2C14":  # Features
+                self._tag(pkt, ["CS", "RAS", "GATT"],
+                          annotation=f"RAS Features read")
+                return True
+
+            if uuid == "0x2C18":  # Data Ready
+                self._tag(pkt, ["CS", "RAS", "GATT"],
+                          annotation="RAS Ranging Data Ready")
+                return True
+
+            if uuid == "0x2C19":  # Data Overwritten
+                self._tag(pkt, ["CS", "RAS", "GATT"],
+                          annotation="RAS Ranging Data Overwritten")
+                return True
+
+            if uuid == "0x2C17":  # Control Point
+                op_m = re.search(r"Opcode:\s*(.+?)(?:\s*\(|$)",
+                                 body_text, re.MULTILINE)
+                opcode = op_m.group(1).strip() if op_m else "?"
+                self._tag(pkt, ["CS", "RAS", "GATT"],
+                          annotation=f"RAS Control Point: {opcode}")
+                return True
+
+            if uuid in ("0x2C15", "0x2C16"):  # Ranging data
+                seg_m = re.search(
+                    r"First Segment:\s*(True|False)", body_text)
+                last_m = re.search(
+                    r"Last Segment:\s*(True|False)", body_text)
+                first = seg_m and seg_m.group(1) == "True"
+                last = last_m and last_m.group(1) == "True"
+                kind = "Real-time" if uuid == "0x2C15" else "On-demand"
+                if first:
+                    self.ras_transfer_count += 1
+                flags = []
+                if first:
+                    flags.append("first")
+                if last:
+                    flags.append("last")
+                seg_info = f" [{'+'.join(flags)}]" if flags else ""
+                self._tag(pkt, ["CS", "RAS", "GATT"],
+                          annotation=f"RAS {kind} Ranging Data{seg_info}")
+                return True
+
+            # Generic RAS characteristic
+            self._tag(pkt, ["CS", "RAS", "GATT"],
+                      annotation=f"{name}")
+            return True
+
+        return False
+
+    # -- Finalize: state machine diagnostics --
+
+    def finalize(self, packets):
+        diags = super().finalize(packets)
+
+        # Emit state machine transition summaries per config_id
+        for config_id in sorted(self._cs_transitions):
+            transitions = self._cs_transitions[config_id]
+            if not transitions:
+                continue
+            lines = [f"STATE: Config ID {config_id} "
+                     f"CS state transitions:"]
+            for ts, old, new, event in transitions:
+                lines.append(
+                    f"        {ts:.3f}s {old:>14s} -> "
+                    f"{new:<14s} ({event})")
+            first_ts = transitions[0][0]
+            first_frame = None
+            for p in packets:
+                if abs(p.timestamp - first_ts) < 0.001:
+                    first_frame = p.frame
+                    break
+            diags.append(Diagnostic(
+                "\n".join(lines),
+                frame=first_frame,
+                timestamp=first_ts,
+                tags=["CS"]))
+
+        return diags
+
+
+# ---------------------------------------------------------------------------
 # Disconnection annotator (specialization of connections)
 # ---------------------------------------------------------------------------
 
@@ -2517,6 +2846,7 @@ ANNOTATORS = {
     "Advertising / Scanning": AdvertisingAnnotator,
     "Controller enumeration": HCIInitAnnotator,
     "Disconnection analysis": DisconnectionAnnotator,
+    "Channel Sounding": ChannelSoundingAnnotator,
 }
 
 

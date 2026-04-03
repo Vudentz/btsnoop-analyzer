@@ -397,6 +397,57 @@ DISCONNECTION = _HEADER + """
 """ + _FOOTER
 
 # ---------------------------------------------------------------------------
+# Channel Sounding
+# ---------------------------------------------------------------------------
+
+CHANNEL_SOUNDING = _HEADER + """
+
+### Connection Timeline
+
+| # | Timestamp | Event | Details |
+|---|-----------|-------|---------|
+{timeline_rows}
+
+### CS Capabilities
+
+| Field | Local | Remote |
+|-------|-------|--------|
+| **Roles Supported** | {local_roles} | {remote_roles} |
+| **Modes Supported** | {local_modes} | {remote_modes} |
+| **Num Antennas** | {local_antennas} | {remote_antennas} |
+| **CS Sync PHYs** | {local_phys} | {remote_phys} |
+
+### CS Configuration
+
+| Config ID | Mode | Role | RTT Type | PHY | Status |
+|-----------|------|------|----------|-----|--------|
+{config_rows}
+
+### CS Procedure Results
+
+| Field | Value |
+|-------|-------|
+| **Procedures executed** | {procedure_count} |
+| **Subevent results received** | {subevent_count} |
+| **Aborted subevents/procedures** | {abort_count} |
+| **Abort reasons (if any)** | {abort_reasons} |
+
+### RAS Data Transfer
+
+| Field | Value |
+|-------|-------|
+| **RAS Service discovered** | {ras_discovered} |
+| **RAS Features** | {ras_features} |
+| **Data transfers completed** | {ras_transfers} |
+| **Segments lost / recovered** | {ras_segments_lost} |
+
+### Issues Found
+
+{issues}
+
+""" + _FOOTER
+
+# ---------------------------------------------------------------------------
 # Template registry
 # ---------------------------------------------------------------------------
 
@@ -415,6 +466,7 @@ TEMPLATES = {
     "L2CAP channel issues":     L2CAP,
     "Advertising / Scanning":   ADVERTISING,
     "Disconnection analysis":   DISCONNECTION,
+    "Channel Sounding":         CHANNEL_SOUNDING,
 }
 
 
