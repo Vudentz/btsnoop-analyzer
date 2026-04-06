@@ -2572,6 +2572,24 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
     # CCCD write values that enable notifications (0x0001) or
     # indications (0x0002)
     _CCCD_ENABLE_RE = re.compile(r"Data\[\d+\]: 0[12]00$")
+    # Regex to detect btmon's decoded Type: field on the Handle: line.
+    # When btmon knows the attribute (from cached GATT discovery), it
+    # appends "Type: <HumanName> (0xNNNN)" after the handle.  If the
+    # Type is a raw hex UUID like "Type: 0x2803", btmon does NOT know
+    # the name — we treat that the same as no Type: field.
+    # Match group 1 captures the human-readable type name.
+    _DECODED_TYPE_RE = re.compile(
+        r"Handle:\s*0x[0-9a-fA-F]+\s+Type:\s+(?!0x)(.+?)(?:\s*\(0x[0-9a-fA-F]+\))?\s*$",
+        re.MULTILINE)
+    # Keywords that indicate a RAS/RAP/Channel Sounding GATT
+    # characteristic.  If btmon decodes a Type: containing any of
+    # these, we still tag the packet.
+    _RAS_TYPE_KEYWORDS = frozenset({
+        "rang",           # Ranging, RAS Ranging Data Body, etc.
+        "ras",            # RAS Features, RAS Control Point, etc.
+        "rap",            # Ranging Profile
+        "channel sound",  # future-proof for CS-specific names
+    })
 
     def annotate(self, packets):
         """Two-pass annotation: CS HCI events first, then GATT heuristic.
@@ -2650,7 +2668,21 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
         ``key`` so they appear in the Key Frames table and get full
         body text in the prefilter.  Bulk data (notifications and
         indications) are ``context`` to avoid flooding.
+
+        If btmon has decoded a ``Type:`` field with a human-readable
+        name (meaning btmon knows the attribute from GATT discovery),
+        we check whether the name is RAS-related.  Non-RAS decoded
+        types (e.g. "Content Control ID", "Device Name") are skipped
+        to avoid false positives.
         """
+        # Check for btmon-decoded Type: field — if present and non-RAS,
+        # this is a known non-RAS attribute; skip it.
+        type_m = self._DECODED_TYPE_RE.search(body_text)
+        if type_m:
+            type_name = type_m.group(1).lower()
+            if not any(kw in type_name for kw in self._RAS_TYPE_KEYWORDS):
+                return None
+
         handle_m = re.search(r"Handle:\s*(0x[0-9a-fA-F]+)", body_text)
         handle = handle_m.group(1) if handle_m else "?"
 

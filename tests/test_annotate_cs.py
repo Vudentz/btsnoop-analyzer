@@ -1542,3 +1542,162 @@ class TestClassifyATTOperation:
         body = "      ATT: Exchange MTU Request (0x02) len 2"
         result = ann._classify_att_operation(body)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Decoded Type: exclusion tests (false-positive prevention)
+# ---------------------------------------------------------------------------
+
+class TestDecodedTypeExclusion:
+    """When btmon has decoded a Type: field with a human-readable name,
+    non-RAS attributes should be excluded from the GATT heuristic."""
+
+    def test_non_ras_type_read_request_skipped(self):
+        """Read Request with decoded non-RAS Type (MCS) returns None."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x004d Type: Content Control ID (0x2bba)")
+        result = ann._classify_att_operation(body)
+        assert result is None
+
+    def test_non_ras_type_write_request_skipped(self):
+        """Write Request with decoded non-RAS Type returns None."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Write Request (0x12) len 3\n"
+                "        Handle: 0x0008 Type: Client Supported Features (0x2b29)\n"
+                "          Data[1]: 05")
+        result = ann._classify_att_operation(body)
+        assert result is None
+
+    def test_non_ras_device_name_skipped(self):
+        """Read Request with decoded Device Name Type returns None."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x0016 Type: Device Name (0x2a00)")
+        result = ann._classify_att_operation(body)
+        assert result is None
+
+    def test_non_ras_appearance_skipped(self):
+        """Read Request with decoded Appearance Type returns None."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x0018 Type: Appearance (0x2a01)")
+        result = ann._classify_att_operation(body)
+        assert result is None
+
+    def test_non_ras_tmap_role_skipped(self):
+        """Read of TMAP role returns None."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x00a2 Type: Telephony and Media Audio "
+                "Profile Role (0x2b51)")
+        result = ann._classify_att_operation(body)
+        assert result is None
+
+    def test_non_ras_notification_skipped(self):
+        """Notification with decoded non-RAS Type returns None."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Handle Value Notification (0x1b) len 20\n"
+                "        Handle: 0x0030 Type: Track Title (0x2b97)\n"
+                "          Data: 4d79536f6e67")
+        result = ann._classify_att_operation(body)
+        assert result is None
+
+    def test_raw_hex_type_not_excluded(self):
+        """Type: with raw hex UUID (0x2803) is treated as unknown —
+        the heuristic should still tag it."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x0050 Type: 0x2803")
+        result = ann._classify_att_operation(body)
+        assert result is not None
+        annotation, priority = result
+        assert "RAS GATT Read" in annotation
+        assert priority == "key"
+
+    def test_no_type_field_not_excluded(self):
+        """Handle with no Type: field at all (btmon doesn't know the
+        attribute) — the heuristic should still tag it."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x007f")
+        result = ann._classify_att_operation(body)
+        assert result is not None
+        annotation, priority = result
+        assert "RAS GATT Read" in annotation
+        assert "0x007f" in annotation
+        assert priority == "key"
+
+    def test_ras_type_keyword_ranging_not_excluded(self):
+        """If btmon decodes a Type with 'Rang' in the name, it should
+        still be tagged (forward-compatibility for when btmon knows RAS)."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x0090 Type: RAS Ranging Data Body (0x2bb7)")
+        result = ann._classify_att_operation(body)
+        assert result is not None
+        annotation, priority = result
+        assert "RAS GATT Read" in annotation
+        assert priority == "key"
+
+    def test_ras_type_keyword_ras_features(self):
+        """Type containing 'RAS' keyword is not excluded."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Read Request (0x0a) len 2\n"
+                "        Handle: 0x0091 Type: RAS Features (0x2bb5)")
+        result = ann._classify_att_operation(body)
+        assert result is not None
+
+    def test_ras_type_keyword_ras_control_point(self):
+        """Type containing 'RAS' keyword is not excluded."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Write Request (0x12) len 3\n"
+                "        Handle: 0x0092 Type: RAS Control Point (0x2bb9)\n"
+                "          Data[1]: 01")
+        result = ann._classify_att_operation(body)
+        assert result is not None
+        annotation, priority = result
+        assert "RAS GATT Write" in annotation
+        assert priority == "key"
+
+    def test_non_ras_cccd_write_skipped(self):
+        """CCCD enable on a non-RAS handle with decoded Type is skipped."""
+        ann = ChannelSoundingAnnotator()
+        body = ("      ATT: Write Request (0x12) len 4\n"
+                "        Handle: 0x0031 Type: Track Title (0x2b97)\n"
+                "          Data[2]: 0100")
+        result = ann._classify_att_operation(body)
+        assert result is None
+
+    def test_gatt_heuristic_excludes_decoded_non_ras(self):
+        """End-to-end: annotate() should NOT tag ATT packets with
+        btmon-decoded non-RAS Type: fields."""
+        # CS event to establish handle and time window
+        cs_pkt = _make_packet(
+            ">", "HCI Event: LE Meta Event (0x3e) plen 86",
+            ["      LE CS Config Complete (0x2f)",
+             "        Status: Success (0x00)",
+             "        Connection handle: 3"],
+            frame=100, ts=240.0)
+        # Non-RAS ATT packet within time window, same handle
+        att_pkt = _make_packet(
+            "<", "ACL Data TX: Handle 3 flags 0x00 dlen 7",
+            ["      ATT: Read Request (0x0a) len 2",
+             "        Handle: 0x004d Type: Content Control ID (0x2bba)"],
+            frame=101, ts=239.5)
+        # RAS ATT packet (no decoded Type:) within time window, same handle
+        ras_pkt = _make_packet(
+            "<", "ACL Data TX: Handle 3 flags 0x00 dlen 7",
+            ["      ATT: Read Request (0x0a) len 2",
+             "        Handle: 0x007f"],
+            frame=102, ts=239.6)
+
+        ann = ChannelSoundingAnnotator()
+        ann.annotate([cs_pkt, att_pkt, ras_pkt])
+
+        # Non-RAS packet should NOT be tagged
+        assert att_pkt.tags is None or "CS" not in att_pkt.tags, \
+            "Non-RAS ATT packet with decoded Type should not be tagged"
+        # Unknown-handle ATT packet should still be tagged
+        assert ras_pkt.tags is not None and "CS" in ras_pkt.tags, \
+            "ATT packet without decoded Type should be tagged"
