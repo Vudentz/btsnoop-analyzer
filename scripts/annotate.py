@@ -2487,14 +2487,14 @@ class HCIInitAnnotator(RuleMatchAnnotator):
 # ---------------------------------------------------------------------------
 
 # RAS (Ranging Service) GATT UUIDs
-_RAS_SERVICE_UUID = "0x185B"
+_RAS_SERVICE_UUID = "0x185b"
 _RAS_UUIDS = {
-    "0x2C14": "RAS Features",
-    "0x2C15": "RAS Real-time Ranging Data",
-    "0x2C16": "RAS On-demand Ranging Data",
-    "0x2C17": "RAS Control Point",
-    "0x2C18": "RAS Ranging Data Ready",
-    "0x2C19": "RAS Ranging Data Overwritten",
+    "0x2c14": "RAS Features",
+    "0x2c15": "RAS Real-time Ranging Data",
+    "0x2c16": "RAS On-demand Ranging Data",
+    "0x2c17": "RAS Control Point",
+    "0x2c18": "RAS Ranging Data Ready",
+    "0x2c19": "RAS Ranging Data Overwritten",
 }
 
 # CS state machine states (per config_id)
@@ -2560,6 +2560,7 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
         self._cs_handles = set()     # HCI connection handles from CS events
         self._cs_timestamps = []     # timestamps of all CS HCI events
         self._gatt_att_count = 0     # ATT packets tagged by heuristic
+        self._ras_hook_matches = 0   # packets matched by _handle_ras()
 
     # -- GATT proximity heuristic --
 
@@ -2615,8 +2616,14 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
                 if pkt.timestamp > 0:
                     self._cs_timestamps.append(pkt.timestamp)
 
-        # Pass 2: GATT proximity heuristic
-        if self._cs_handles and self._cs_timestamps:
+        # Pass 2: GATT proximity heuristic (fallback only)
+        # When btmon properly decodes RAS UUIDs (e.g. with the GATT
+        # cache fix), the RAS hook tags packets directly in Pass 1.
+        # The heuristic is only needed when btmon can't decode UUIDs
+        # (older btmon without GATT cache), so we skip it when the
+        # RAS hook already matched packets.
+        if (self._cs_handles and self._cs_timestamps
+                and self._ras_hook_matches == 0):
             self._apply_gatt_heuristic(packets)
 
         return self.finalize(packets)
@@ -2918,11 +2925,17 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
         return True
 
     def _handle_ras(self, pkt, body_text):
+        matched = self._handle_ras_inner(pkt, body_text)
+        if matched:
+            self._ras_hook_matches += 1
+        return matched
+
+    def _handle_ras_inner(self, pkt, body_text):
         # RAS Service discovery
         if _RAS_SERVICE_UUID in body_text:
             self.saw_ras_discovery = True
             self._tag(pkt, ["CS", "RAS", "GATT"],
-                      annotation="RAS Service discovered (UUID 0x185B)")
+                      annotation="RAS Service discovered (UUID 0x185b)")
             return True
 
         # RAS characteristic operations
@@ -2930,22 +2943,22 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
             if uuid not in body_text:
                 continue
 
-            if uuid == "0x2C14":  # Features
+            if uuid == "0x2c14":  # Features
                 self._tag(pkt, ["CS", "RAS", "GATT"],
                           annotation=f"RAS Features read")
                 return True
 
-            if uuid == "0x2C18":  # Data Ready
+            if uuid == "0x2c18":  # Data Ready
                 self._tag(pkt, ["CS", "RAS", "GATT"],
                           annotation="RAS Ranging Data Ready")
                 return True
 
-            if uuid == "0x2C19":  # Data Overwritten
+            if uuid == "0x2c19":  # Data Overwritten
                 self._tag(pkt, ["CS", "RAS", "GATT"],
                           annotation="RAS Ranging Data Overwritten")
                 return True
 
-            if uuid == "0x2C17":  # Control Point
+            if uuid == "0x2c17":  # Control Point
                 op_m = re.search(r"Opcode:\s*(.+?)(?:\s*\(|$)",
                                  body_text, re.MULTILINE)
                 opcode = op_m.group(1).strip() if op_m else "?"
@@ -2953,14 +2966,14 @@ class ChannelSoundingAnnotator(RuleMatchAnnotator):
                           annotation=f"RAS Control Point: {opcode}")
                 return True
 
-            if uuid in ("0x2C15", "0x2C16"):  # Ranging data
+            if uuid in ("0x2c15", "0x2c16"):  # Ranging data
                 seg_m = re.search(
                     r"First Segment:\s*(True|False)", body_text)
                 last_m = re.search(
                     r"Last Segment:\s*(True|False)", body_text)
                 first = seg_m and seg_m.group(1) == "True"
                 last = last_m and last_m.group(1) == "True"
-                kind = "Real-time" if uuid == "0x2C15" else "On-demand"
+                kind = "Real-time" if uuid == "0x2c15" else "On-demand"
                 if first:
                     self.ras_transfer_count += 1
                 flags = []

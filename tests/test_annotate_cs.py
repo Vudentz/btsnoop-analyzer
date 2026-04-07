@@ -287,7 +287,7 @@ def _ras_service_discovery(frame=500, ts=25.0):
         "ACL Data TX: Handle 2048 flags 0x00 dlen 11",
         ["      ATT: Find By Type Value Request (0x06) len 8",
          "        UUID: Primary Service (0x2800)",
-         "        Value: 0x185B"],
+         "        Value: 0x185b"],
         frame=frame, ts=ts)
 
 
@@ -298,7 +298,7 @@ def _ras_features_read(frame=510, ts=25.5):
         ["      ATT: Read Response (0x0b) len 4",
          "        Handle: 0x0003",
          "          Features: 0x0000000f",
-         "          UUID: 0x2C14"],
+         "          UUID: 0x2c14"],
         frame=frame, ts=ts)
 
 
@@ -309,7 +309,7 @@ def _ras_data_ready(counter=42, frame=520, ts=26.0):
         ["      ATT: Handle Value Notification (0x1b) len 2",
          "        Handle: 0x000e",
          f"          Counter: {counter}",
-         "          UUID: 0x2C18"],
+         "          UUID: 0x2c18"],
         frame=frame, ts=ts)
 
 
@@ -321,7 +321,7 @@ def _ras_get_ranging_data(counter=42, frame=530, ts=26.5):
          "        Handle: 0x000b",
          "          Opcode: Get Ranging Data (0x00)",
          f"          Ranging Counter: 0x{counter:04x}",
-         "          UUID: 0x2C17"],
+         "          UUID: 0x2c17"],
         frame=frame, ts=ts)
 
 
@@ -334,7 +334,7 @@ def _ras_ondemand_data(first=True, last=False, frame=540, ts=27.0):
          f"          First Segment: {first}",
          f"          Last Segment: {last}",
          "          Segment Index: 0",
-         "          UUID: 0x2C16"],
+         "          UUID: 0x2c16"],
         frame=frame, ts=ts)
 
 
@@ -346,7 +346,7 @@ def _ras_ack(counter=42, frame=550, ts=28.0):
          "        Handle: 0x000b",
          "          Opcode: ACK Ranging Data (0x01)",
          f"          Ranging Counter: 0x{counter:04x}",
-         "          UUID: 0x2C17"],
+         "          UUID: 0x2c17"],
         frame=frame, ts=ts)
 
 
@@ -1701,3 +1701,276 @@ class TestDecodedTypeExclusion:
         # Unknown-handle ATT packet should still be tagged
         assert ras_pkt.tags is not None and "CS" in ras_pkt.tags, \
             "ATT packet without decoded Type should be tagged"
+
+
+# ---------------------------------------------------------------------------
+# New btmon format RAS packet builders (with decoded Type: fields)
+# ---------------------------------------------------------------------------
+
+def _ras_service_discovery_new_btmon(acl_handle=3, frame=500, ts=25.0):
+    """RAS Service discovery as decoded by btmon 5.86+ with GATT cache."""
+    return _make_packet(
+        ">",
+        f"ACL Data RX: Handle {acl_handle} flags 0x02 dlen 18",
+        ["      ATT: Read By Group Type Response (0x11) len 6",
+         "        Attribute Data Length: 6",
+         "        Attribute Data List: 1 entry",
+         "          Handle Range: 0x0075-0x008c",
+         "          UUID: Ranging Service (0x185b)"],
+        frame=frame, ts=ts)
+
+
+def _ras_features_read_new_btmon(acl_handle=3, frame=510, ts=25.5):
+    """RAS Features read as decoded by btmon 5.86+ with GATT cache."""
+    return _make_packet(
+        ">",
+        f"ACL Data RX: Handle {acl_handle} flags 0x02 dlen 11",
+        ["      ATT: Read Response (0x0b) len 4",
+         "        Handle: 0x007f Type: RAS Features (0x2c14)",
+         "          Value: 0f000000"],
+        frame=frame, ts=ts)
+
+
+def _ras_control_point_new_btmon(acl_handle=3, frame=520, ts=26.0):
+    """RAS Control Point write as decoded by btmon 5.86+ with GATT cache."""
+    return _make_packet(
+        "<",
+        f"ACL Data TX: Handle {acl_handle} flags 0x00 dlen 10",
+        ["      ATT: Write Command (0x52) len 3",
+         "        Handle: 0x0087 Type: RAS Control Point (0x2c17)",
+         "          Opcode: Get Ranging Data (0x00)",
+         "          Ranging Counter: 0x002a"],
+        frame=frame, ts=ts)
+
+
+def _ras_ranging_data_new_btmon(acl_handle=3, frame=530, ts=26.5):
+    """RAS Real-time Ranging Data notification decoded by btmon 5.86+."""
+    return _make_packet(
+        ">",
+        f"ACL Data RX: Handle {acl_handle} flags 0x02 dlen 30",
+        ["      ATT: Handle Value Notification (0x1b) len 25",
+         "        Handle: 0x0081 Type: RAS Real-time Ranging Data (0x2c15)",
+         "          First Segment: True",
+         "          Last Segment: True",
+         "          Segment Index: 0",
+         "          Data: 0102030405060708090a0b0c0d0e0f"],
+        frame=frame, ts=ts)
+
+
+# ---------------------------------------------------------------------------
+# Heuristic skip tests: when RAS hook finds real UUID matches
+# ---------------------------------------------------------------------------
+
+class TestHeuristicSkipWhenRASHookMatches:
+    """When btmon properly decodes RAS UUIDs and the RAS hook matches
+    packets in Pass 1, the GATT proximity heuristic should NOT run,
+    preventing false positives on non-RAS ATT packets."""
+
+    def _build_cs_sequence(self, conn_handle=3, base_ts=243.0):
+        """Build a minimal CS HCI event sequence with connection handle."""
+        return [
+            _cs_config_complete_connhandle(
+                conn_handle=conn_handle, frame=2033,
+                ts=base_ts + 0.6),
+            _cs_procedure_enable_complete_connhandle(
+                conn_handle=conn_handle, state=1,
+                frame=2038, ts=base_ts + 0.85),
+            _cs_subevent_result_connhandle(
+                conn_handle=conn_handle, steps=8,
+                frame=2046, ts=base_ts + 1.0),
+        ]
+
+    def test_ras_hook_increments_match_counter(self):
+        """_handle_ras() should increment _ras_hook_matches on success."""
+        ann = ChannelSoundingAnnotator()
+        pkt = _ras_service_discovery()
+        ann.annotate_packet(pkt)
+        assert ann._ras_hook_matches == 1
+
+        pkt2 = _ras_features_read()
+        ann.annotate_packet(pkt2)
+        assert ann._ras_hook_matches == 2
+
+    def test_ras_hook_no_match_counter_zero(self):
+        """Non-RAS packets should not increment _ras_hook_matches."""
+        ann = ChannelSoundingAnnotator()
+        cs_pkt = _cs_config_complete_connhandle(conn_handle=3)
+        ann.annotate_packet(cs_pkt)
+        assert ann._ras_hook_matches == 0
+
+    def test_heuristic_skipped_when_ras_hook_matched(self):
+        """When RAS hook matched packets, heuristic should not run.
+
+        This is the key fix: with btmon 5.86+ that properly decodes
+        RAS UUIDs, the hook tags real RAS packets, so the heuristic
+        should not tag unrelated GATT operations as RAS.
+        """
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+
+        # RAS packet that the hook will match (has UUID 0x185b)
+        ras_pkt = _ras_service_discovery_new_btmon(
+            acl_handle=3, frame=2010, ts=243.3)
+
+        # Unrelated ATT packet on same handle, within time window
+        # With old behavior, this would be tagged by the heuristic
+        unrelated_att = _att_read_request(
+            handle="0x0018", acl_handle=3,
+            frame=2005, ts=243.2)
+
+        packets = [unrelated_att, ras_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+
+        # RAS packet should be tagged by the hook
+        assert "RAS" in ras_pkt.tags
+        assert ann._ras_hook_matches >= 1
+
+        # Unrelated ATT should NOT be tagged (heuristic was skipped)
+        assert unrelated_att.tags is None or "CS" not in unrelated_att.tags, \
+            "Unrelated ATT should not be tagged when RAS hook matched"
+
+    def test_heuristic_still_runs_when_no_ras_hook_match(self):
+        """When no RAS hook matches (old btmon), heuristic should still run.
+
+        This tests backward compatibility: old btmon output has no visible
+        UUIDs, so the heuristic is the only way to detect RAS GATT ops.
+        """
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+
+        # ATT packet on same handle, within time window, no UUIDs visible
+        att_pkt = _att_read_request(
+            handle="0x007f", acl_handle=3,
+            frame=2005, ts=243.263)
+
+        packets = [att_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+
+        # No RAS hook matches
+        assert ann._ras_hook_matches == 0
+
+        # Heuristic should have tagged this packet
+        assert att_pkt.tags is not None and "CS" in att_pkt.tags, \
+            "ATT packet should be tagged by heuristic when no RAS hook match"
+        assert "RAS" in att_pkt.tags
+
+    def test_multiple_unrelated_att_not_tagged_with_ras_hook(self):
+        """Multiple non-RAS ATT packets should all be skipped when
+        RAS hook found real matches."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+
+        # Real RAS packets (hook will match these)
+        ras1 = _ras_service_discovery_new_btmon(
+            acl_handle=3, frame=2010, ts=239.5)
+        ras2 = _ras_features_read_new_btmon(
+            acl_handle=3, frame=2011, ts=239.6)
+        ras3 = _ras_control_point_new_btmon(
+            acl_handle=3, frame=2012, ts=239.7)
+
+        # Non-RAS ATT packets on same handle, within time window
+        # These should NOT be tagged
+        appearance = _make_packet(
+            "<", "ACL Data TX: Handle 3 flags 0x00 dlen 7",
+            ["      ATT: Read By Type Request (0x08) len 6",
+             "        Handle Range: 0x0001-0x00ff",
+             "        Attribute Type: Appearance (0x2a01)"],
+            frame=2001, ts=239.1)
+        db_hash = _make_packet(
+            "<", "ACL Data TX: Handle 3 flags 0x00 dlen 7",
+            ["      ATT: Read By Type Request (0x08) len 6",
+             "        Handle Range: 0x0001-0x00ff",
+             "        Attribute Type: Database Hash (0x2b2a)"],
+            frame=2002, ts=239.2)
+        cccd_write = _att_write_request(
+            handle="0x002b", data="0100", acl_handle=3,
+            frame=2003, ts=239.3)
+
+        packets = [appearance, db_hash, cccd_write,
+                   ras1, ras2, ras3] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+
+        # RAS packets should be properly tagged
+        assert "RAS" in ras1.tags
+        assert "RAS" in ras2.tags
+        assert "RAS" in ras3.tags
+
+        # Non-RAS packets should NOT be tagged
+        for pkt, desc in [(appearance, "Appearance"),
+                          (db_hash, "Database Hash"),
+                          (cccd_write, "CCCD write")]:
+            assert pkt.tags is None or "CS" not in pkt.tags, \
+                f"{desc} ATT packet should not be tagged when " \
+                f"RAS hook matched"
+
+    def test_new_btmon_ras_packets_tagged_correctly(self):
+        """RAS packets in new btmon format (with decoded Type:) should
+        be correctly tagged by the RAS hook via UUID matching."""
+        ann = ChannelSoundingAnnotator()
+
+        pkt = _ras_service_discovery_new_btmon()
+        ann.annotate_packet(pkt)
+        assert "RAS" in pkt.tags
+        assert ann.saw_ras_discovery is True
+        assert "RAS Service discovered" in pkt.annotation
+
+    def test_new_btmon_ras_features_tagged(self):
+        """RAS Features read in new btmon format tagged correctly."""
+        ann = ChannelSoundingAnnotator()
+        pkt = _ras_features_read_new_btmon()
+        ann.annotate_packet(pkt)
+        assert "RAS" in pkt.tags
+        assert "Features" in pkt.annotation
+
+    def test_new_btmon_ras_control_point_tagged(self):
+        """RAS Control Point in new btmon format tagged correctly."""
+        ann = ChannelSoundingAnnotator()
+        pkt = _ras_control_point_new_btmon()
+        ann.annotate_packet(pkt)
+        assert "RAS" in pkt.tags
+        assert "Control Point" in pkt.annotation
+
+    def test_new_btmon_ras_ranging_data_tagged(self):
+        """RAS Ranging Data in new btmon format tagged correctly."""
+        ann = ChannelSoundingAnnotator()
+        pkt = _ras_ranging_data_new_btmon()
+        ann.annotate_packet(pkt)
+        assert "RAS" in pkt.tags
+        assert "Ranging Data" in pkt.annotation
+        assert ann.ras_transfer_count == 1
+
+    def test_gatt_heuristic_count_zero_when_skipped(self):
+        """When heuristic is skipped, _gatt_att_count should be 0."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+
+        ras_pkt = _ras_service_discovery_new_btmon(
+            acl_handle=3, frame=2010, ts=243.3)
+        att_pkt = _att_read_request(
+            handle="0x007f", acl_handle=3,
+            frame=2005, ts=243.2)
+
+        packets = [att_pkt, ras_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        ann.annotate(packets)
+
+        assert ann._gatt_att_count == 0, \
+            "GATT ATT count should be 0 when heuristic was skipped"
+
+    def test_gatt_heuristic_no_diagnostic_when_skipped(self):
+        """When heuristic is skipped, no proximity heuristic diagnostic."""
+        cs_pkts = self._build_cs_sequence(conn_handle=3, base_ts=243.0)
+
+        ras_pkt = _ras_service_discovery_new_btmon(
+            acl_handle=3, frame=2010, ts=243.3)
+        att_pkt = _att_read_request(
+            handle="0x007f", acl_handle=3,
+            frame=2005, ts=243.2)
+
+        packets = [att_pkt, ras_pkt] + cs_pkts
+        ann = ChannelSoundingAnnotator()
+        diags = ann.annotate(packets)
+
+        heuristic_diags = [d for d in diags
+                           if "proximity heuristic" in str(d)]
+        assert len(heuristic_diags) == 0, \
+            "No proximity heuristic diagnostic when heuristic was skipped"
