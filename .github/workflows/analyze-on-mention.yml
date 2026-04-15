@@ -1,0 +1,260 @@
+name: Analyze trace on mention
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  analyze:
+    # Trigger when a comment starts with /analyze (ignoring leading whitespace)
+    if: >-
+      github.event.issue.pull_request == null &&
+      startsWith(
+        trim(github.event.comment.body),
+        '/analyze'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout analyzer repo
+        uses: actions/checkout@v4
+
+      - name: Add reaction to acknowledge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+      - name: Parse command and find trace URL
+        id: parse
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = context.payload.comment.body.trim();
+            const issueBody = context.payload.issue.body || '';
+
+            // ── Parse the /analyze command ──
+            // Supported forms:
+            //   /analyze
+            //   /analyze <url>
+            //   /analyze --focus "Audio / LE Audio"
+            //   /analyze <url> --focus "Audio / LE Audio"
+            const commandMatch = comment.match(
+              /^\/analyze(?:\s+(https:\/\/\S+))?(?:\s+--focus\s+"([^"]+)")?/i
+            );
+
+            // ── Find trace URL ──
+            // Priority: 1) explicit URL in command, 2) URL in comment,
+            //           3) URL in issue body
+            const urlPatterns = [
+              /https:\/\/github\.com\/[^\s)]+\.(?:log|snoop|btsnoop|cfa)/gi,
+              /https:\/\/github\.com\/user-attachments\/(?:files|assets)\/[^\s)]+/gi,
+            ];
+
+            function findTraceUrl(text) {
+              for (const pattern of urlPatterns) {
+                pattern.lastIndex = 0;
+                const match = text.match(pattern);
+                if (match) return match[0];
+              }
+              return '';
+            }
+
+            let traceUrl = '';
+
+            // 1) Explicit URL from the command
+            if (commandMatch && commandMatch[1]) {
+              traceUrl = commandMatch[1];
+            }
+
+            // 2) Search the full comment body for attached files
+            if (!traceUrl) {
+              traceUrl = findTraceUrl(comment);
+            }
+
+            // 3) Fall back to the issue body
+            if (!traceUrl) {
+              traceUrl = findTraceUrl(issueBody);
+            }
+
+            if (!traceUrl) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `**btsnoop Analyzer**: No trace file found. Please provide a trace URL:\n\n\`\`\`\n/analyze <url>\n\`\`\`\n\nOr attach a \`.log\`, \`.snoop\`, \`.btsnoop\`, or \`.cfa\` file to this issue or comment.`
+              });
+              core.setFailed('No trace file URL found');
+              return;
+            }
+
+            // ── Focus area ──
+            let focus = 'General (full analysis)';
+            if (commandMatch && commandMatch[2]) {
+              focus = commandMatch[2];
+            }
+
+            // ── Description ──
+            // Try to extract from the issue body (template-based issues)
+            const descMatch = issueBody.match(
+              /### Description\s*\n([\s\S]*?)(?=\n###|\n\*\*|$)/i
+            ) || issueBody.match(
+              /#### Description\s*\n([\s\S]*?)(?=\n####|\n###|$)/i
+            );
+            const description = descMatch?.[1]?.trim()
+              || 'Triggered via /analyze command';
+
+            core.setOutput('trace_url', traceUrl);
+            core.setOutput('description', description);
+            core.setOutput('focus', focus);
+
+            console.log(`Trace URL: ${traceUrl}`);
+            console.log(`Description: ${description}`);
+            console.log(`Focus: ${focus}`);
+
+      - name: Post "analyzing" comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '**btsnoop Analyzer** is processing your trace. This typically takes 1-3 minutes.\n\n_Decoding with btmon, then sending to LLM for analysis..._'
+            });
+
+      - name: Run btsnoop-analyzer
+        id: analysis
+        uses: ./
+        with:
+          trace-url: ${{ steps.parse.outputs.trace_url }}
+          description: ${{ steps.parse.outputs.description }}
+          focus: ${{ steps.parse.outputs.focus }}
+          anonymize: 'true'
+          provider: ${{ vars.LLM_PROVIDER || 'github' }}
+          model: ${{ vars.LLM_MODEL || '' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
+
+      - name: Post detection comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const detect = fs.readFileSync('${{ steps.analysis.outputs.detect }}', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: detect
+            });
+
+      - name: Post filter comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const filter = fs.readFileSync('${{ steps.analysis.outputs.filter }}', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: filter
+            });
+
+      - name: Post annotation comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const annotate = fs.readFileSync('${{ steps.analysis.outputs.annotate }}', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: annotate
+            });
+
+      - name: Post diagnostics comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const diagnose = fs.readFileSync('${{ steps.analysis.outputs.diagnose }}', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: diagnose
+            });
+
+      - name: Post analysis comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const analysis = fs.readFileSync('${{ steps.analysis.outputs.analyze }}', 'utf8');
+
+            const footer = `\n\n---\n<sub>Analyzed by [btsnoop-analyzer](https://github.com/${context.repo.owner}/${context.repo.repo}) using btmon from [BlueZ](https://github.com/bluez/bluez). MAC addresses were anonymized before LLM processing. Triggered via \`/analyze\` command.</sub>`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: analysis + footer
+            });
+
+      - name: Add success reaction
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+
+      - name: Post error comment
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Analysis Failed
+
+            The automated analysis encountered an error. This could be due to:
+            - Unsupported trace file format
+            - Trace file too large to process
+            - LLM API rate limiting or downtime
+
+            You can try again by posting another \`/analyze\` comment.
+
+            <details>
+            <summary>Debug info</summary>
+
+            Workflow run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+            </details>`
+            });
