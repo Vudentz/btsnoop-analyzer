@@ -101,12 +101,13 @@ variables > Actions > Secrets**.
 
 | Provider | `provider` value | Required env variable | Default model |
 |----------|:----------------:|----------------------|:-------------:|
-| GitHub Models | `github` | `GITHUB_TOKEN` (built-in) | `openai/gpt-4o` |
+| GitHub Models | `github` | `GH_MODELS_TOKEN` (PAT) | `openai/gpt-4o` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
 
-**GitHub Models** is the simplest option -- it uses the built-in
-`GITHUB_TOKEN` and requires no additional secrets.
+**GitHub Models** is the simplest option -- it requires a GitHub PAT
+with access to GitHub Models. Usage is subject to your GitHub plan's
+rate limits and token allowances.
 
 ### Using OpenAI or Anthropic
 

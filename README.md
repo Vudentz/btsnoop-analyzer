@@ -109,19 +109,21 @@ variables > Actions > Variables) to one of:
 
 | Provider    | Variable value | Required secret        | Default model           |
 |-------------|---------------|------------------------|-------------------------|
-| GitHub Models | `github`    | `GITHUB_TOKEN` (built-in) | `openai/gpt-4o`      |
+| GitHub Models | `github`    | `GH_MODELS_TOKEN` (PAT) | `openai/gpt-4o`      |
 | OpenAI      | `openai`      | `OPENAI_API_KEY`       | `gpt-4o`                |
 | Anthropic   | `anthropic`   | `ANTHROPIC_API_KEY`    | `claude-sonnet-4-20250514` |
 
-**GitHub Models** is the default and requires no additional secrets — it uses
-the built-in `GITHUB_TOKEN`.
+**GitHub Models** is the default and simplest to set up — it requires a
+GitHub PAT with access to GitHub Models. Usage is subject to your GitHub
+plan's rate limits and token allowances.
 
 To override the model, set the `LLM_MODEL` repository variable (e.g.,
 `gpt-4o-mini`, `claude-sonnet-4-20250514`).
 
-### 3. Add API keys (if not using GitHub Models)
+### 3. Add API keys
 
 Go to Settings > Secrets and variables > Actions > Secrets and add:
+- `GH_MODELS_TOKEN` — a GitHub PAT for the GitHub Models provider
 - `OPENAI_API_KEY` — for the OpenAI provider
 - `ANTHROPIC_API_KEY` — for the Anthropic provider
 
