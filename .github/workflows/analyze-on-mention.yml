@@ -1,8 +1,19 @@
 name: Analyze on mention
 
 on:
+  # Local trigger: fires for comments on this repo's issues
   issue_comment:
     types: [created]
+
+  # Remote trigger: called by external repos via workflow_call
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      GH_MODELS_TOKEN:
+        required: false
 
 permissions:
   issues: write
@@ -10,7 +21,7 @@ permissions:
 
 jobs:
   analyze:
-    # Trigger when a comment starts with /analyze
+    # Trigger when a comment contains /analyze (on a non-PR issue)
     if: >-
       github.event.issue.pull_request == null &&
       contains(github.event.comment.body, '/analyze')
@@ -18,9 +29,6 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout analyzer repo
-        uses: actions/checkout@v4
-
       - name: Add reaction to acknowledge
         uses: actions/github-script@v7
         with:
@@ -132,7 +140,7 @@ jobs:
 
       - name: Run btsnoop-analyzer
         id: analysis
-        uses: ./
+        uses: Vudentz/btsnoop-analyzer@master
         with:
           trace-url: ${{ steps.parse.outputs.trace_url }}
           description: ${{ steps.parse.outputs.description }}
@@ -210,7 +218,7 @@ jobs:
             const fs = require('fs');
             const analysis = fs.readFileSync('${{ steps.analysis.outputs.analyze }}', 'utf8');
 
-            const footer = `\n\n---\n<sub>Analyzed by [btsnoop-analyzer](https://github.com/${context.repo.owner}/${context.repo.repo}) using btmon from [BlueZ](https://github.com/bluez/bluez). MAC addresses were anonymized before LLM processing. Triggered via \`/analyze\` command.</sub>`;
+            const footer = `\n\n---\n<sub>Analyzed by [btsnoop-analyzer](https://github.com/Vudentz/btsnoop-analyzer) using btmon from [BlueZ](https://github.com/bluez/bluez). MAC addresses were anonymized before LLM processing. Triggered via \`/analyze\` command.</sub>`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,

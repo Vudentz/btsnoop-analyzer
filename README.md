@@ -24,6 +24,49 @@ comment.
 | 4 | **Diagnostics** | Graceful disconnects, stream summaries, state tables, absence warnings |
 | 5 | **LLM Analysis** | Structured diagnostic report from the LLM |
 
+## `/analyze` Slash Command
+
+You can trigger analysis from any issue comment using the `/analyze`
+slash command. This works in the btsnoop-analyzer repository and in
+any external repository that adds the caller workflow.
+
+### Usage
+
+```
+/analyze
+/analyze https://github.com/user-attachments/files/.../trace.log
+/analyze --focus "Audio / LE Audio"
+/analyze https://example.com/trace.log --focus "Audio / A2DP"
+```
+
+When no URL is given, the analyzer searches the comment body and then
+the issue body for attached trace files (`.log`, `.snoop`, `.btsnoop`,
+`.cfa`).
+
+### Adding `/analyze` to your repository
+
+Add this workflow file to `.github/workflows/btsnoop-analyze.yml`:
+
+```yaml
+name: Analyze on mention
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  analyze:
+    if: >-
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '/analyze')
+    uses: Vudentz/btsnoop-analyzer/.github/workflows/analyze-on-mention.yml@master
+    secrets: inherit
+```
+
+That's it. The reusable workflow handles parsing, trace detection,
+analysis, and posting results. See [doc/github-action.md](doc/github-action.md)
+for LLM provider configuration.
+
 ## Use as a GitHub Action
 
 btsnoop-analyzer is available as a reusable GitHub Action. Add it to
@@ -149,7 +192,8 @@ btsnoop-analyzer/
 │   ├── ISSUE_TEMPLATE/
 │   │   └── analyze-trace.yml    # Issue form: trace upload, description, focus
 │   └── workflows/
-│       └── analyze-trace.yml    # CI workflow: build btmon, run 5-step pipeline
+│       ├── analyze-trace.yml    # CI workflow: build btmon, run 5-step pipeline
+│       └── analyze-on-mention.yml # /analyze slash command (local + reusable)
 ├── scripts/
 │   ├── analyze.py               # Main entry: decode, anonymize, orchestrate pipeline
 │   ├── detect.py                # Step 1: area scoring, absence checks, log clipping

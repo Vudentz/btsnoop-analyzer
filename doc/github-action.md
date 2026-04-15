@@ -135,6 +135,38 @@ variables > Actions > Secrets**.
 
 ## Examples
 
+### `/analyze` slash command (recommended for external repos)
+
+The simplest way to add btsnoop-analyzer to your repository. Users
+comment `/analyze` on any issue to trigger analysis. Add this single
+file to `.github/workflows/btsnoop-analyze.yml`:
+
+```yaml
+name: Analyze on mention
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  analyze:
+    if: >-
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '/analyze')
+    uses: Vudentz/btsnoop-analyzer/.github/workflows/analyze-on-mention.yml@master
+    secrets: inherit
+```
+
+The reusable workflow handles everything: parsing the command,
+finding the trace URL, running the 5-step pipeline, and posting
+results as issue comments.
+
+Supported command forms:
+- `/analyze` -- find trace URL in the comment or issue body
+- `/analyze <url>` -- analyze a specific trace URL
+- `/analyze --focus "Audio / LE Audio"` -- specify focus area
+- `/analyze <url> --focus "Audio / A2DP"` -- both URL and focus
+
 ### Issue-triggered analysis with all 5 comments
 
 This is the most common pattern -- replicate the behavior of the
