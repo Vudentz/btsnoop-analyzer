@@ -1,4 +1,4 @@
-name: Analyze trace on mention
+name: Analyze on mention
 
 on:
   issue_comment:
@@ -10,13 +10,10 @@ permissions:
 
 jobs:
   analyze:
-    # Trigger when a comment starts with /analyze (ignoring leading whitespace)
+    # Trigger when a comment starts with /analyze
     if: >-
       github.event.issue.pull_request == null &&
-      startsWith(
-        trim(github.event.comment.body),
-        '/analyze'
-      )
+      contains(github.event.comment.body, '/analyze')
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
