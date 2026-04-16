@@ -148,11 +148,10 @@ jobs:
           anonymize: 'true'
           provider: ${{ vars.LLM_PROVIDER || 'github' }}
           model: ${{ vars.LLM_MODEL || '' }}
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-models-token: ${{ secrets.GH_MODELS_TOKEN }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Post detection comment
         if: success()
