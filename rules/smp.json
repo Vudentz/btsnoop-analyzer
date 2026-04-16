@@ -4,8 +4,12 @@
 
   "detect": {
     "activity": [
+      "SMP:",
+      "Pair Device",
       "Pairing Request",
       "Pairing Response",
+      "Pairing Confirm",
+      "Pairing Random",
       "Pairing Public Key",
       "DHKey Check",
       "Encryption Change",
@@ -15,11 +19,15 @@
       "User Confirmation Request",
       "User Passkey Notification",
       "Link Key Notification",
+      "Identity Resolving Key",
+      "Long Term Key",
       "Auth Complete",
       "Authentication Requested"
     ],
     "errors": [
       "Pairing Failed",
+      "Reason: Authentication Failure",
+      "Pair Device.*Status:(?!.*Success)",
       "Encryption Change.*Status:(?!.*Success)",
       "Simple Pairing Complete.*Status:(?!.*Success)",
       "Auth Complete.*Status:(?!.*Success)",
