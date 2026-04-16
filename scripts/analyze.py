@@ -93,12 +93,12 @@ def decode_trace(btmon_path, trace_path):
         result = subprocess.run(
             [btmon_path, "-r", trace_path],
             capture_output=True,
-            text=True,
             timeout=120,
         )
-        output = result.stdout
+        output = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
         if result.returncode != 0 and not output:
-            log(f"btmon stderr: {result.stderr}")
+            log(f"btmon stderr: {stderr}")
             sys.exit(1)
         lines = output.splitlines()
         log(f"Decoded {len(lines)} lines")

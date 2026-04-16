@@ -457,11 +457,10 @@ def run_btmon_analyze(btmon_path: str, trace_path: str,
         result = subprocess.run(
             [btmon_path, "--analyze", trace_path],
             capture_output=True,
-            text=True,
             timeout=timeout,
         )
         # btmon --analyze may return non-zero but still produce output
-        output = result.stdout
+        output = result.stdout.decode("utf-8", errors="replace")
         if not output.strip():
             return None
         return parse_btmon_analyze(output)
