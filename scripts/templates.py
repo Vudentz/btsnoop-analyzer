@@ -284,6 +284,15 @@ L2CAP = _HEADER + """
 |-----|-----------|----------|----------|--------|-----|
 {channel_rows}
 
+### Channel Throughput
+
+If btmon statistics are provided in the prompt, fill in this table using
+those authoritative figures.  Otherwise write "No statistics available."
+
+| CID | Direction | Avg Kb/s | Min Kb/s | Max Kb/s | Packets | Mode |
+|-----|-----------|----------|----------|----------|---------|------|
+{throughput_rows}
+
 ### Signaling Issues
 
 {signaling_issues}

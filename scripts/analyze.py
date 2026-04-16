@@ -60,6 +60,7 @@ from annotate import format_annotation_markdown as annotate_markdown
 from prefilter import prefilter
 from prefilter import format_filter_markdown as filter_markdown
 from diagnose import format_diagnostics_markdown as diagnostics_markdown
+from btmon_stats import run_btmon_analyze
 
 
 def log(msg):
@@ -108,6 +109,24 @@ def decode_trace(btmon_path, trace_path):
     except subprocess.TimeoutExpired:
         log("btmon decoding timed out after 120s")
         sys.exit(1)
+
+
+def analyze_trace(btmon_path, trace_path):
+    """Run btmon --analyze to get statistical summary.
+
+    Returns a BtmonAnalysis object with per-connection and per-channel
+    statistics, or None if btmon --analyze fails.
+    """
+    log("Running btmon --analyze for trace statistics...")
+    result = run_btmon_analyze(btmon_path, trace_path, timeout=120)
+    if result is not None:
+        n_conns = sum(1 for _ in result.all_connections())
+        n_chans = sum(1 for _ in result.all_channels())
+        log(f"btmon --analyze: {result.total_packets} packets, "
+            f"{n_conns} connections, {n_chans} channels")
+    else:
+        log("Warning: btmon --analyze produced no output")
+    return result
 
 
 def anonymize_output(decoded_text):
@@ -283,7 +302,8 @@ def load_docs(docs_path, focus=None):
 
 
 def build_prompt(decoded_text, docs_text, description, focus,
-                 auto_detected=False, absence_errors=None):
+                 auto_detected=False, absence_errors=None,
+                 btmon_stats=None):
     """Build the analysis prompt for the LLM."""
     clip_note = ""
     if "=== Prefiltered btmon log:" in decoded_text:
@@ -347,6 +367,18 @@ and timestamps from the trace. Identify the root cause when possible.{clip_note}
 
 Format your report in GitHub-flavored markdown."""
 
+    # Append btmon --analyze statistics as user context
+    stats_section = ""
+    if btmon_stats is not None:
+        stats_section = (
+            "\n\n## btmon Statistics\n\n"
+            "The following per-connection and per-channel statistics "
+            "were computed by btmon --analyze.  Use these authoritative "
+            "throughput, latency, and packet-count figures in your "
+            "analysis instead of trying to compute them from individual "
+            "packets.\n\n```\n"
+            f"{btmon_stats.format_summary()}\n```")
+
     # Get the structured output template for this focus area
     output_instructions = template_instructions(focus, auto_detected)
 
@@ -354,6 +386,7 @@ Format your report in GitHub-flavored markdown."""
 
 **User description:** {description}
 **Focus area:** {focus}
+{stats_section}
 
 ## Decoded btsnoop trace
 
@@ -559,6 +592,10 @@ def main():
 
     # Decode
     decoded = decode_trace(args.btmon_path, trace_path)
+
+    # Run btmon --analyze for statistical summary (before deleting trace)
+    btmon_stats = analyze_trace(args.btmon_path, trace_path)
+
     os.unlink(trace_path)
 
     if not decoded.strip():
@@ -735,6 +772,7 @@ def main():
         decoded, docs, args.description, focus,
         auto_detected=auto_detected,
         absence_errors=absence_errors,
+        btmon_stats=btmon_stats,
     )
 
     log(f"Sending to {args.provider} for analysis...")
