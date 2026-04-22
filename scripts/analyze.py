@@ -612,11 +612,13 @@ def main():
         decoded = anonymize_output(decoded)
 
     # Provider-specific context limits (in chars, ~4 chars per token).
-    # GitHub Models (gpt-4o default): 128K tokens input.  Reserve ~2K
-    # tokens for system prompt and ~600 tokens for template instructions.
-    # Allow generous trace and docs budgets.
+    # GitHub Models free tier: 8K tokens input for all models.
+    # Reserve ~1.5K tokens for system prompt and ~600 tokens for template
+    # instructions.  With docs at 4K chars (~1K tokens), that totals
+    # ~3.1K tokens of overhead.  The remaining ~4.9K tokens (~16K chars
+    # at ~3.3 chars/token for btmon traces) goes to the trace.
     CONTEXT_LIMITS = {
-        "github":    {"trace": 100000, "docs": 50000},
+        "github":    {"trace": 16000, "docs": 4000},
         "openai":    {"trace": 100000, "docs": 50000},
         "anthropic": {"trace": 100000, "docs": 50000},
     }
