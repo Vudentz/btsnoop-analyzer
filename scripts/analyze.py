@@ -537,6 +537,61 @@ PROVIDERS = {
 }
 
 
+# --- GitHub Models rate-limit-aware context budgeting ---
+
+# Per-tier token-per-request limits from the GitHub Models docs.
+# https://docs.github.com/en/github-models/prototyping-with-ai-models#rate-limits
+# Maps rate_limit_tier -> max input tokens (non-Enterprise plans).
+_TIER_INPUT_LIMITS = {
+    "low":       8000,
+    "high":      8000,
+    "embedding": 64000,
+}
+_DEFAULT_INPUT_LIMIT = 8000
+
+
+def _github_models_limits(model=None):
+    """Query the GitHub Models catalog for the model's token limit
+    and return trace/docs char budgets.
+
+    Falls back to conservative defaults if the catalog is unreachable.
+    """
+    model = model or "openai/gpt-4o"
+    max_input = _DEFAULT_INPUT_LIMIT
+
+    try:
+        req = urllib.request.Request(
+            "https://models.github.ai/catalog/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            catalog = json.loads(resp.read())
+
+        for entry in catalog:
+            if entry.get("id") == model:
+                tier = entry.get("rate_limit_tier", "").lower()
+                max_input = _TIER_INPUT_LIMITS.get(tier, _DEFAULT_INPUT_LIMIT)
+                log(f"GitHub Models: {model} tier={tier} "
+                    f"max_input={max_input} tokens")
+                break
+        else:
+            log(f"GitHub Models: {model} not found in catalog, "
+                f"using default {max_input} tokens")
+    except Exception as e:
+        log(f"GitHub Models catalog query failed ({e}), "
+            f"using default {max_input} tokens")
+
+    # Budget: reserve ~2100 tokens for system prompt + template
+    # instructions + overhead.  Split the rest 80/20 trace/docs.
+    # Convert tokens to chars (~3.3 chars/token for btmon output).
+    available = max_input - 2100
+    chars_per_token = 3.3
+    trace_chars = int(available * 0.80 * chars_per_token)
+    docs_chars = int(available * 0.20 * chars_per_token)
+
+    return {"trace": trace_chars, "docs": docs_chars}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze a btsnoop trace with LLM assistance"
@@ -612,17 +667,18 @@ def main():
         decoded = anonymize_output(decoded)
 
     # Provider-specific context limits (in chars, ~4 chars per token).
-    # GitHub Models free tier: 8K tokens input for all models.
-    # Reserve ~1.5K tokens for system prompt and ~600 tokens for template
-    # instructions.  With docs at 4K chars (~1K tokens), that totals
-    # ~3.1K tokens of overhead.  The remaining ~4.9K tokens (~16K chars
-    # at ~3.3 chars/token for btmon traces) goes to the trace.
+    # For GitHub Models, query the catalog to get the per-request token
+    # limit for the selected model, then compute char budgets.
+    # For other providers, use generous defaults.
     CONTEXT_LIMITS = {
-        "github":    {"trace": 16000, "docs": 4000},
         "openai":    {"trace": 100000, "docs": 50000},
         "anthropic": {"trace": 100000, "docs": 50000},
     }
-    limits = CONTEXT_LIMITS.get(args.provider, CONTEXT_LIMITS["openai"])
+
+    if args.provider == "github":
+        limits = _github_models_limits(args.model)
+    else:
+        limits = CONTEXT_LIMITS.get(args.provider, CONTEXT_LIMITS["openai"])
 
     focus = normalize_focus(args.focus)
     if focus != args.focus:
