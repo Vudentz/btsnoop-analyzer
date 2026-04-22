@@ -143,12 +143,14 @@ jobs:
           model: ${{ vars.LLM_MODEL || '' }}
 
       - name: Post detection comment
-        if: success()
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const detect = fs.readFileSync('${{ steps.analysis.outputs.detect }}', 'utf8');
+            const path = 'results/detect.md';
+            if (!fs.existsSync(path)) return;
+            const detect = fs.readFileSync(path, 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -157,12 +159,14 @@ jobs:
             });
 
       - name: Post filter comment
-        if: success()
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const filter = fs.readFileSync('${{ steps.analysis.outputs.filter }}', 'utf8');
+            const path = 'results/filter.md';
+            if (!fs.existsSync(path)) return;
+            const filter = fs.readFileSync(path, 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -171,12 +175,14 @@ jobs:
             });
 
       - name: Post annotation comment
-        if: success()
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const annotate = fs.readFileSync('${{ steps.analysis.outputs.annotate }}', 'utf8');
+            const path = 'results/annotate.md';
+            if (!fs.existsSync(path)) return;
+            const annotate = fs.readFileSync(path, 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -185,12 +191,14 @@ jobs:
             });
 
       - name: Post diagnostics comment
-        if: success()
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const diagnose = fs.readFileSync('${{ steps.analysis.outputs.diagnose }}', 'utf8');
+            const path = 'results/diagnose.md';
+            if (!fs.existsSync(path)) return;
+            const diagnose = fs.readFileSync(path, 'utf8');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
