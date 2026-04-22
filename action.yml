@@ -156,6 +156,7 @@ runs:
       shell: bash
       env:
         PYTHONUNBUFFERED: '1'
+        PYTHONWARNINGS: 'ignore::UserWarning'
       run: |
         mkdir -p "${{ inputs.output-dir }}"
 
@@ -193,7 +194,7 @@ runs:
       uses: actions/ai-inference@v2
       with:
         prompt-file: ${{ github.action_path }}/prompts/analyze.prompt.yml
-        model: ${{ inputs.model }}
+        model: ${{ inputs.model || 'openai/gpt-4o' }}
         max-completion-tokens: 4096
         temperature: 0.2
         file_input: |

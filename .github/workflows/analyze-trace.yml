@@ -7,6 +7,7 @@ on:
 permissions:
   issues: write
   contents: read
+  models: read
 
 jobs:
   analyze:
@@ -106,13 +107,7 @@ jobs:
           description: ${{ steps.parse.outputs.description }}
           focus: ${{ steps.parse.outputs.focus }}
           anonymize: ${{ steps.parse.outputs.anonymize }}
-          provider: ${{ vars.LLM_PROVIDER || 'github' }}
           model: ${{ vars.LLM_MODEL || '' }}
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
 
       - name: Post detection comment
         if: success()
