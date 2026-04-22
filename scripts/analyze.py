@@ -581,11 +581,19 @@ def _github_models_limits(model=None):
         log(f"GitHub Models catalog query failed ({e}), "
             f"using default {max_input} tokens")
 
-    # Budget: reserve ~2100 tokens for system prompt + template
-    # instructions + overhead.  Split the rest 80/20 trace/docs.
-    # Convert tokens to chars (~3.3 chars/token for btmon output).
-    available = max_input - 2100
-    chars_per_token = 3.3
+    # Budget: the total prompt (system + user) must fit within
+    # max_input tokens.  Fixed overhead includes the system prompt
+    # base text, template instructions, user prompt boilerplate,
+    # btmon stats section, and message formatting.  Estimate ~1500
+    # tokens for this overhead.  Split remaining budget 80/20
+    # between trace and docs.
+    #
+    # Token estimation: btmon output averages ~2 chars/token due to
+    # hex addresses, colons, short keywords, and whitespace.  Use
+    # this conservative ratio to avoid exceeding the limit.
+    overhead_tokens = 1500
+    available = max_input - overhead_tokens
+    chars_per_token = 2.0
     trace_chars = int(available * 0.80 * chars_per_token)
     docs_chars = int(available * 0.20 * chars_per_token)
 
