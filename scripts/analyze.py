@@ -303,7 +303,7 @@ def load_docs(docs_path, focus=None):
 
 def build_prompt(decoded_text, docs_text, description, focus,
                  auto_detected=False, absence_errors=None,
-                 btmon_stats=None):
+                 btmon_stats=None, stats_budget=None):
     """Build the analysis prompt for the LLM."""
     clip_note = ""
     if "=== Prefiltered btmon log:" in decoded_text:
@@ -370,6 +370,9 @@ Format your report in GitHub-flavored markdown."""
     # Append btmon --analyze statistics as user context
     stats_section = ""
     if btmon_stats is not None:
+        stats_text = btmon_stats.format_summary()
+        if stats_budget and len(stats_text) > stats_budget:
+            stats_text = stats_text[:stats_budget] + "\n[... truncated ...]"
         stats_section = (
             "\n\n## btmon Statistics\n\n"
             "The following per-connection and per-channel statistics "
@@ -377,7 +380,7 @@ Format your report in GitHub-flavored markdown."""
             "throughput, latency, and packet-count figures in your "
             "analysis instead of trying to compute them from individual "
             "packets.\n\n```\n"
-            f"{btmon_stats.format_summary()}\n```")
+            f"{stats_text}\n```")
 
     # Get the structured output template for this focus area
     output_instructions = template_instructions(focus, auto_detected)
@@ -583,21 +586,25 @@ def _github_models_limits(model=None):
 
     # Budget: the total prompt (system + user) must fit within
     # max_input tokens.  Fixed overhead includes the system prompt
-    # base text, template instructions, user prompt boilerplate,
-    # btmon stats section, and message formatting.  Estimate ~1500
-    # tokens for this overhead.  Split remaining budget 80/20
-    # between trace and docs.
+    # base text (~2500 chars), template instructions (~3000 chars),
+    # user prompt boilerplate (~500 chars) = ~6000 chars total.
+    # At ~2 chars/token that is ~3000 tokens of overhead.
     #
     # Token estimation: btmon output averages ~2 chars/token due to
     # hex addresses, colons, short keywords, and whitespace.  Use
     # this conservative ratio to avoid exceeding the limit.
-    overhead_tokens = 1500
+    #
+    # Split remaining budget: 70% trace, 15% docs, 15% stats.
+    # Stats budget is only used for L2CAP focus; otherwise it is
+    # reallocated to trace by the caller.
+    overhead_tokens = 3000
     available = max_input - overhead_tokens
     chars_per_token = 2.0
-    trace_chars = int(available * 0.80 * chars_per_token)
-    docs_chars = int(available * 0.20 * chars_per_token)
+    trace_chars = int(available * 0.70 * chars_per_token)
+    docs_chars = int(available * 0.15 * chars_per_token)
+    stats_chars = int(available * 0.15 * chars_per_token)
 
-    return {"trace": trace_chars, "docs": docs_chars}
+    return {"trace": trace_chars, "docs": docs_chars, "stats": stats_chars}
 
 
 def main():
@@ -770,6 +777,16 @@ def main():
     annotator_diags = []
     filter_trace_chars = 0
 
+    # Only include btmon stats for focus areas whose output template
+    # references them (currently only L2CAP channel issues).
+    _STATS_FOCUS_AREAS = {"L2CAP channel issues"}
+    include_stats = focus in _STATS_FOCUS_AREAS
+
+    # When stats are not included, reallocate that budget to trace
+    if not include_stats:
+        limits["trace"] += limits.get("stats", 0)
+        limits["stats"] = 0
+
     # Clip the log to the relevant section for the focus area.
     # Use the annotator-based prefilter when available — it does
     # protocol-aware packet annotation and budget-aware filtering.
@@ -841,7 +858,8 @@ def main():
         decoded, docs, args.description, focus,
         auto_detected=auto_detected,
         absence_errors=absence_errors,
-        btmon_stats=btmon_stats,
+        btmon_stats=btmon_stats if include_stats else None,
+        stats_budget=limits.get("stats"),
     )
 
     # --prompt-only: write prompt files and exit (for actions/ai-inference)
