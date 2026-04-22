@@ -566,6 +566,11 @@ def main():
         help="Override the default model for the chosen provider"
     )
     parser.add_argument(
+        "--prompt-only", action="store_true",
+        help="Run steps 1-4 and write prompt files without calling LLM. "
+             "Writes system-prompt.txt and user-prompt.txt to --output-dir."
+    )
+    parser.add_argument(
         "--btmon-path", default="./bluez/monitor/btmon",
         help="Path to btmon binary"
     )
@@ -607,13 +612,11 @@ def main():
         decoded = anonymize_output(decoded)
 
     # Provider-specific context limits (in chars, ~4 chars per token).
-    # GitHub Models free tier (gpt-4o-mini): 8K tokens input total.
-    # Reserve ~1.5K tokens for system prompt and ~600 tokens for template
-    # instructions.  With docs at 4K chars (~1K tokens), that totals
-    # ~3.1K tokens of overhead.  The remaining ~4.9K tokens (~16K chars
-    # at ~3.3 chars/token for btmon traces) goes to the trace.
+    # GitHub Models (gpt-4o default): 128K tokens input.  Reserve ~2K
+    # tokens for system prompt and ~600 tokens for template instructions.
+    # Allow generous trace and docs budgets.
     CONTEXT_LIMITS = {
-        "github":    {"trace": 16000, "docs": 4000},
+        "github":    {"trace": 100000, "docs": 50000},
         "openai":    {"trace": 100000, "docs": 50000},
         "anthropic": {"trace": 100000, "docs": 50000},
     }
@@ -774,6 +777,21 @@ def main():
         absence_errors=absence_errors,
         btmon_stats=btmon_stats,
     )
+
+    # --prompt-only: write prompt files and exit (for actions/ai-inference)
+    if args.prompt_only:
+        if not args.output_dir:
+            log("Error: --prompt-only requires --output-dir")
+            sys.exit(1)
+        sp_path = os.path.join(args.output_dir, "system-prompt.txt")
+        up_path = os.path.join(args.output_dir, "user-prompt.txt")
+        with open(sp_path, "w") as f:
+            f.write(system_prompt)
+        with open(up_path, "w") as f:
+            f.write(user_prompt)
+        log(f"Prompt files written to {args.output_dir}")
+        log("Skipping LLM call (--prompt-only mode)")
+        return
 
     log(f"Sending to {args.provider} for analysis...")
     provider_fn = PROVIDERS[args.provider]

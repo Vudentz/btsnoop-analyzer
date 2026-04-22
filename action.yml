@@ -28,12 +28,10 @@ inputs:
     description: 'Anonymize MAC addresses before LLM processing (true/false)'
     required: false
     default: 'true'
-  provider:
-    description: 'LLM provider: github, openai, or anthropic'
-    required: false
-    default: 'github'
   model:
-    description: 'Override the default LLM model for the chosen provider'
+    description: >
+      Override the default LLM model. Must be available in the GitHub
+      Models catalog (e.g. openai/gpt-4o-mini, openai/gpt-4o).
     required: false
     default: ''
   btmon-path:
@@ -56,22 +54,6 @@ inputs:
     description: 'Python version to use'
     required: false
     default: '3.12'
-  github-token:
-    description: 'GitHub token (fallback for GitHub Models API)'
-    required: false
-    default: ''
-  gh-models-token:
-    description: 'GitHub PAT with models:read scope for GitHub Models API'
-    required: false
-    default: ''
-  openai-api-key:
-    description: 'OpenAI API key'
-    required: false
-    default: ''
-  anthropic-api-key:
-    description: 'Anthropic API key'
-    required: false
-    default: ''
 
 outputs:
   output-dir:
@@ -170,14 +152,10 @@ runs:
         gh issue edit "${{ github.event.issue.number }}" --add-label "$LABEL"
         echo "Applied label: $LABEL"
 
-    - name: Run analysis
+    - name: Run analysis (steps 1-4 and prompt generation)
       shell: bash
       env:
         PYTHONUNBUFFERED: '1'
-        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
-        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
-        GH_MODELS_TOKEN: ${{ inputs.gh-models-token }}
-        GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
         mkdir -p "${{ inputs.output-dir }}"
 
@@ -199,18 +177,40 @@ runs:
           ANON_FLAG="--anonymize"
         fi
 
-        MODEL_FLAG=""
-        if [ -n "${{ inputs.model }}" ]; then
-          MODEL_FLAG="--model ${{ inputs.model }}"
-        fi
-
         python3 "${{ github.action_path }}/scripts/analyze.py" \
           --trace-url "${{ inputs.trace-url }}" \
           --description "${{ inputs.description }}" \
           --focus "${{ inputs.focus }}" \
-          --provider "${{ inputs.provider }}" \
-          $MODEL_FLAG \
+          --provider "github" \
           $ANON_FLAG \
+          --prompt-only \
           --btmon-path "$BTMON_PATH" \
           --docs-path "$DOCS_PATH" \
           --output-dir "${{ inputs.output-dir }}"
+
+    - name: LLM analysis (step 5)
+      id: llm
+      uses: actions/ai-inference@v2
+      with:
+        prompt-file: ${{ github.action_path }}/prompts/analyze.prompt.yml
+        model: ${{ inputs.model }}
+        max-completion-tokens: 4096
+        temperature: 0.2
+        file_input: |
+          system_prompt: ${{ inputs.output-dir }}/system-prompt.txt
+          user_prompt: ${{ inputs.output-dir }}/user-prompt.txt
+
+    - name: Write analysis output (step 5)
+      shell: bash
+      run: |
+        RESPONSE_FILE="${{ steps.llm.outputs.response-file }}"
+        OUTPUT="${{ inputs.output-dir }}/analyze.md"
+
+        {
+          printf '## Step 5: LLM Analysis\n\n'
+          # Strip <output-template> wrapper that some LLMs echo back
+          sed -e 's/^\s*<output-template>\s*//' \
+              -e 's/\s*<\/output-template>\s*$//' \
+              "$RESPONSE_FILE"
+        } > "$OUTPUT"
+        echo "Analysis written to $OUTPUT"

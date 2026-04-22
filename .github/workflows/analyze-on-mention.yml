@@ -6,14 +6,7 @@ on:
     types: [created]
 
   # Remote trigger: called by external repos via workflow_call
-  workflow_call:
-    secrets:
-      OPENAI_API_KEY:
-        required: false
-      ANTHROPIC_API_KEY:
-        required: false
-      GH_MODELS_TOKEN:
-        required: false
+  workflow_call: {}
 
 permissions:
   issues: write
@@ -147,12 +140,7 @@ jobs:
           description: ${{ steps.parse.outputs.description }}
           focus: ${{ steps.parse.outputs.focus }}
           anonymize: 'true'
-          provider: ${{ vars.LLM_PROVIDER || 'github' }}
           model: ${{ vars.LLM_MODEL || '' }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          gh-models-token: ${{ secrets.GH_MODELS_TOKEN }}
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Post detection comment
         if: success()
