@@ -307,6 +307,15 @@ def select_focus(results):
     error_areas = [d for d in results if d.has_errors]
     if error_areas:
         top = error_areas[0]
+
+        # If disconnection has errors (Remove Device / Unpair Device),
+        # prefer it over audio areas whose errors are likely side effects
+        # of the disconnection (e.g. rejected reconnection attempts).
+        disc = by_name.get("disconnection")
+        if (disc and disc.has_errors and disc is not top
+                and top.area.name in _AUDIO_AREAS):
+            top = disc
+
         # Still check for advertising coexistence
         _check_adv_coexistence(by_name, top, coexistence)
         return top.area.focus, top.absence_errors, coexistence

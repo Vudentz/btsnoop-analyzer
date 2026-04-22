@@ -2,6 +2,23 @@
   "name": "disconnection",
   "focus": "Disconnection analysis",
 
+  "detect": {
+    "activity": [
+      "Remove Device",
+      "Unpair Device",
+      "HCI Event: Disconnec",
+      "Reason:.*Connection Terminated",
+      "Reason:.*Remote User Terminated",
+      "L2CAP: Disconnection Request",
+      "PSM 17"
+    ],
+    "errors": [
+      "Remove Device",
+      "Unpair Device",
+      "Reason:(?!.*(Remote User|Connection Terminated By Local Host|Success))"
+    ]
+  },
+
   "annotate": {
     "match_rules": [
       {
@@ -33,6 +50,29 @@
         "match": {"field": "full", "contains": "Connection Timeout"},
         "tags": ["HCI"],
         "annotation": "Connection timeout",
+        "exclusive": true
+      },
+      {
+        "id": "remove_device",
+        "direction": "@",
+        "match": {"field": "full", "contains": "Remove Device"},
+        "tags": ["MGMT"],
+        "annotation": "MGMT: Remove Device",
+        "exclusive": true
+      },
+      {
+        "id": "unpair_device",
+        "direction": "@",
+        "match": {"field": "full", "contains": "Unpair Device"},
+        "tags": ["MGMT"],
+        "annotation": "MGMT: Unpair Device",
+        "exclusive": true
+      },
+      {
+        "id": "hidp_data",
+        "match": {"field": "full", "contains": "PSM 17"},
+        "tags": ["HID"],
+        "annotation": "HIDP data (PSM 17)",
         "exclusive": true
       }
     ],
