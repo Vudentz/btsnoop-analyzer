@@ -3041,15 +3041,91 @@ class DisconnectionAnnotator(RuleMatchAnnotator):
 
     name = "disconnection"
 
+    # HIDP virtual cable unplug: single byte 0x15 on PSM 17 control channel
+    _HIDP_CONTROL_RE = re.compile(r"PSM 17 mode Basic")
+    _VIRTUAL_CABLE_UNPLUG_RE = re.compile(r"^\s+15\s")
+
+    def __init__(self):
+        super().__init__()
+        self.saw_virtual_cable_unplug = False
+        self.saw_remove_device = False
+        self.saw_unpair_device = False
+        self.virtual_cable_unplug_frame = None
+        self.remove_device_frame = None
+        self.unpair_device_frame = None
+        self._prev_was_hidp_control = False
+
     def _run_hooks(self, pkt):
         s = pkt.summary
+        body_text = "\n".join(pkt.body)
+
+        # Detect HIDP virtual cable unplug: 1-byte payload 0x15 on PSM 17
+        if "ACL" in s and pkt.body:
+            if self._HIDP_CONTROL_RE.search(body_text):
+                # Check if the hex dump body contains just "15"
+                for line in pkt.body:
+                    if self._VIRTUAL_CABLE_UNPLUG_RE.match(line):
+                        self.saw_virtual_cable_unplug = True
+                        self.virtual_cable_unplug_frame = pkt.frame
+                        self._tag(pkt, "HID",
+                                  annotation="HIDP Virtual Cable Unplug "
+                                             "(0x15)")
+                        return True
+
+        # Detect MGMT Remove Device
+        if pkt.direction == "@" and "Remove Device" in body_text:
+            self.saw_remove_device = True
+            self.remove_device_frame = pkt.frame
+            self._tag(pkt, "MGMT",
+                      annotation="MGMT: Remove Device (unbond)")
+            return True
+
+        # Detect MGMT Unpair Device
+        if pkt.direction == "@" and "Unpair Device" in body_text:
+            self.saw_unpair_device = True
+            self.unpair_device_frame = pkt.frame
+            self._tag(pkt, "MGMT",
+                      annotation="MGMT: Unpair Device")
+            return True
+
+        # Classify other disconnect events
         if "Disconnect" in s and pkt.direction in ("<", ">"):
-            body_text = "\n".join(pkt.body)
             handle_m = re.search(r"Handle:\s*(\d+)", body_text)
             handle = handle_m.group(1) if handle_m else "?"
             self._tag_disconnect(pkt, handle=handle)
             return True
+
         return False
+
+    def finalize(self, packets):
+        diags = super().finalize(packets)
+
+        # Emit a diagnostic if virtual cable unplug caused device removal
+        if self.saw_virtual_cable_unplug and (
+                self.saw_remove_device or self.saw_unpair_device):
+            diags.append(Diagnostic(
+                "VIRTUAL_CABLE_UNPLUG: HID device sent Virtual Cable "
+                "Unplug (0x15) on HIDP control channel (PSM 17), "
+                f"frame #{self.virtual_cable_unplug_frame}. "
+                "This triggered device removal"
+                + (f" (Remove Device at frame "
+                   f"#{self.remove_device_frame})"
+                   if self.saw_remove_device else "")
+                + (f" and unpairing (Unpair Device at frame "
+                   f"#{self.unpair_device_frame})"
+                   if self.saw_unpair_device else "")
+                + ". Per HID Profile spec, Virtual Cable Unplug "
+                "requires destroying all bonding information."
+            ))
+        elif self.saw_remove_device or self.saw_unpair_device:
+            diags.append(Diagnostic(
+                "DEVICE_REMOVAL: Device was removed"
+                + (" (Remove Device)" if self.saw_remove_device else "")
+                + (" and unpaired" if self.saw_unpair_device else "")
+                + " via MGMT interface without Virtual Cable Unplug."
+            ))
+
+        return diags
 
 
 # ---------------------------------------------------------------------------

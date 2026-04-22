@@ -76,10 +76,10 @@
         "exclusive": true
       }
     ],
-    "hooks": ["disconnect_classification"]
+    "hooks": ["disconnect_classification", "virtual_cable_unplug"]
   },
 
   "diagnose": {
-    "hooks": []
+    "hooks": ["virtual_cable_unplug_diagnostic"]
   }
 }
