@@ -330,8 +330,8 @@ Quick reference for reading btmon output:
 
 | Prefix | Meaning |
 |--------|---------|
-| `>` | Host → Controller (commands, ACL/SCO/ISO data out) |
-| `<` | Controller → Host (events, ACL/SCO/ISO data in) |
+| `<` | Host → Controller (HCI commands, ACL/SCO/ISO data TX) |
+| `>` | Controller → Host (HCI events, ACL/SCO/ISO data RX) |
 | `@` | Management interface traffic (kernel ↔ userspace) |
 | `=` | System notes (open/close/index events) |
 
